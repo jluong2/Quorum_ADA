@@ -246,6 +246,20 @@
     </div>
   </div>
 
+  <!-- ── Executor modal ────────────────────────────────────── -->
+  <div id="executor-modal" class="overlay hidden" onclick="closeExecutorModal(event)">
+    <div class="modal executor-modal-box">
+      <div class="modal-header">
+        <h3 id="exec-title">Executor Agent</h3>
+        <button class="close-btn" onclick="closeExecutorModal()">✕</button>
+      </div>
+      <div id="exec-body" class="exec-body"></div>
+      <div class="modal-footer">
+        <button class="btn-ghost" onclick="closeExecutorModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>

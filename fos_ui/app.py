@@ -26,6 +26,7 @@ from flask import Flask, jsonify, render_template, request
 
 from fos_agent import config
 from fos_agent.chain import BlockfrostClient, FOSState, mock_fos_state, read_fos_state
+from fos_agent.executor import run_executor
 from fos_agent.transactions import (
     build_cast_vote_tx,
     build_create_proposal_tx,
@@ -402,6 +403,38 @@ def api_transfer():
             treasury_script_hash=config.TREASURY_SCRIPT_HASH,
         )
         return jsonify({"ok": True, "summary": tx.summary(), "inputs": tx.inputs})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/executor/run", methods=["POST"])
+def api_executor_run():
+    """
+    Run the executor agent for an executed governance proposal.
+    The agent interprets the proposal mandate and carries it out autonomously.
+    """
+    body = request.json or {}
+    proposal_ref = body.get("proposal_ref", "")
+    if not proposal_ref:
+        return jsonify({"ok": False, "error": "proposal_ref required"}), 400
+
+    try:
+        s = _get_state()
+        utxo, gov = _find_proposal(s, proposal_ref)
+
+        if gov.status_label() != "Executed":
+            return jsonify({
+                "ok": False,
+                "error": f"Proposal status is '{gov.status_label()}' — must be Executed to run executor",
+            }), 400
+
+        result = run_executor(
+            proposal_ref=proposal_ref,
+            governance_datum=gov,
+            fos_state=s,
+            verbose=False,
+        )
+        return jsonify({"ok": True, "result": result})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 

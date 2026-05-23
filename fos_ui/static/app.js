@@ -207,6 +207,8 @@ function proposalCard(p, d) {
   }
   if (p.status === 'Executed' && p.is_transfer)
     btns += `<button class="btn btn-transfer" onclick="doTransfer('${p.ref}')">💸 Release Funds</button>`;
+  if (p.status === 'Executed')
+    btns += `<button class="btn btn-executor" onclick="doRunExecutor('${p.ref}')">⚡ Run Task</button>`;
 
   return `
     <div class="proposal-card ${p.status_class}">
@@ -292,6 +294,65 @@ async function doExpire(ref) {
 async function doTransfer(ref) {
   if (!confirm('Release treasury funds for this proposal?\nConfirm the amount in the transaction details.')) return;
   await buildAndShowTx('/api/transfer', { governance_ref: ref }, 'Release Treasury Funds', ref);
+}
+
+async function doRunExecutor(ref) {
+  const modal = document.getElementById('executor-modal');
+  const body  = document.getElementById('exec-body');
+  const title = document.getElementById('exec-title');
+  title.textContent = 'Executor Agent';
+  body.innerHTML = `
+    <div class="exec-spinner">
+      <div class="exec-spinner-ring"></div>
+      <div class="exec-spinner-label">Agent is working…</div>
+    </div>`;
+  modal.classList.remove('hidden');
+
+  try {
+    const r = await fetch('/api/executor/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proposal_ref: ref }),
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error);
+    const res = j.result;
+    showExecutorResult(res);
+  } catch (e) {
+    body.innerHTML = `<div class="exec-error">⚠ ${escHtml(e.message)}</div>`;
+  }
+}
+
+function showExecutorResult(res) {
+  const body = document.getElementById('exec-body');
+  const success = res.success;
+  const events = (res.events || []).map(ev =>
+    `<span class="exec-event-chip ev-${ev}">${ev.replace(/_/g,' ')}</span>`
+  ).join('');
+
+  body.innerHTML = `
+    <div class="exec-status ${success ? 'exec-ok' : 'exec-fail'}">
+      ${success ? '✅ Task completed successfully' : '❌ Task encountered an error'}
+    </div>
+    <div class="exec-meta">
+      <span class="exec-meta-item">🎯 ${escHtml(res.action_type||'')}</span>
+      <span class="exec-meta-item">🔄 ${res.iterations} turns</span>
+    </div>
+    ${events ? `<div class="exec-events">${events}</div>` : ''}
+    ${res.summary ? `
+    <div class="exec-summary-label">Agent Summary</div>
+    <div class="exec-summary">${escHtml(res.summary)}</div>` : ''}
+    ${res.error ? `
+    <div class="exec-summary-label">Error</div>
+    <div class="exec-error-detail">${escHtml(res.error)}</div>` : ''}
+    <div class="exec-ref">${escHtml(res.proposal_ref||'')}</div>
+  `;
+  loadAudit();
+}
+
+function closeExecutorModal(e) {
+  if (e && e.target !== document.getElementById('executor-modal')) return;
+  document.getElementById('executor-modal').classList.add('hidden');
 }
 
 async function buildAndShowTx(endpoint, payload, title) {
