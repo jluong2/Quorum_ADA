@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@indigoprotocol/cardano-mcp": "^1.0.11"
+  }
+}

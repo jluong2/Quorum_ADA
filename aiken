@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""
+Mock Aiken CLI for testing the agent loop.
+Simulates realistic aiken check/build/test/new behavior.
+
+Usage: place this on PATH as 'aiken' during testing.
+  export PATH="/home/claude/cardano_agent/mock:$PATH"
+"""
+
+import sys
+import os
+import json
+from pathlib import Path
+
+command = sys.argv[1] if len(sys.argv) > 1 else ""
+cwd = Path(os.getcwd())
+
+# ── aiken new <name> ──────────────────────────────────────
+if command == "new":
+    name = sys.argv[2] if len(sys.argv) > 2 else "project"
+    project = cwd / name
+    (project / "validators").mkdir(parents=True, exist_ok=True)
+    (project / "lib").mkdir(parents=True, exist_ok=True)
+    (project / "aiken.toml").write_text(f"""[package]
+name = "{name}"
+version = "0.0.0"
+
+[dependencies]
+""")
+    print(f"✨ Created new Aiken project '{name}'")
+    sys.exit(0)
+
+# ── helpers ───────────────────────────────────────────────
+def find_ak_files():
+    return list(cwd.rglob("*.ak"))
+
+def read_sources():
+    sources = {}
+    for f in find_ak_files():
+        sources[str(f.relative_to(cwd))] = f.read_text()
+    return sources
+
+def check_syntax(sources):
+    """Simulate realistic Aiken type/syntax errors."""
+    errors = []
+    for path, content in sources.items():
+        lines = content.splitlines()
+        for i, line in enumerate(lines, 1):
+            # Check for missing type annotations on validators
+            if "validator" in line and "{" not in line and not line.strip().startswith("//"):
+                if i < len(lines) and "fn" not in lines[i]:
+                    errors.append({
+                        "file": path,
+                        "line": i,
+                        "message": "error: expected `fn` after validator block",
+                        "detail": f"  --> {path}:{i}\n   |\n{i:3}| {line}\n   | ^"
+                    })
+            # Check for unclosed braces (simple heuristic)
+            opens = content.count("{")
+            closes = content.count("}")
+            if opens != closes:
+                errors.append({
+                    "file": path,
+                    "line": len(lines),
+                    "message": f"error[syntax]: mismatched braces (found {opens} '{{' and {closes} '}}')",
+                    "detail": f"  --> {path}\n   | hint: check for missing closing brace"
+                })
+                break
+    return errors
+
+# ── aiken check ───────────────────────────────────────────
+if command == "check":
+    sources = read_sources()
+    if not sources:
+        print("⚠ No .ak source files found in validators/ or lib/", file=sys.stderr)
+        sys.exit(1)
+
+    errors = check_syntax(sources)
+    if errors:
+        for e in errors:
+            print(e["message"], file=sys.stderr)
+            print(e["detail"], file=sys.stderr)
+            print(file=sys.stderr)
+        sys.exit(1)
+    else:
+        file_list = "\n".join(f"  checking {p}" for p in sources)
+        print(file_list)
+        print(f"\n✅ Checked {len(sources)} module(s) — no errors found")
+        sys.exit(0)
+
+# ── aiken build ───────────────────────────────────────────
+if command == "build":
+    sources = read_sources()
+    if not sources:
+        print("error: no source files found", file=sys.stderr)
+        sys.exit(1)
+
+    errors = check_syntax(sources)
+    if errors:
+        for e in errors:
+            print(e["message"], file=sys.stderr)
+            print(e["detail"], file=sys.stderr)
+        sys.exit(1)
+
+    # Check for validator keyword presence
+    has_validator = any("validator" in src for src in sources.values())
+    if not has_validator:
+        print("error[compile]: no validator found in project\n  hint: define at least one `validator` block", file=sys.stderr)
+        sys.exit(1)
+
+    # Simulate successful build output
+    plutus_path = cwd / "plutus.json"
+    plutus = {
+        "preamble": {"title": cwd.name, "version": "0.0.0"},
+        "validators": []
+    }
+    for path, content in sources.items():
+        if "validator" in content:
+            plutus["validators"].append({
+                "title": Path(path).stem,
+                "compiledCode": "mock_compiled_cbor_" + Path(path).stem,
+                "hash": "mock_script_hash_abcdef1234"
+            })
+    plutus_path.write_text(json.dumps(plutus, indent=2))
+
+    print(f"   Compiling {cwd.name} 0.0.0 ({cwd})")
+    for path in sources:
+        print(f"    Compiling {path}")
+    print(f"\n✅ Built {len(plutus['validators'])} validator(s) → plutus.json")
+    sys.exit(0)
+
+# ── aiken test ────────────────────────────────────────────
+if command == "test":
+    sources = read_sources()
+    if not sources:
+        print("error: no source files found", file=sys.stderr)
+        sys.exit(1)
+
+    errors = check_syntax(sources)
+    if errors:
+        for e in errors:
+            print(e["message"], file=sys.stderr)
+        sys.exit(1)
+
+    total_tests = 0
+    passed = 0
+    failed_tests = []
+
+    for path, content in sources.items():
+        lines = content.splitlines()
+        for i, line in enumerate(lines):
+            if line.strip().startswith("test "):
+                total_tests += 1
+                test_name = line.strip().replace("test ", "").replace("{", "").strip()
+                # Simulate: tests with "fail" in name fail, others pass
+                if "fail" in test_name.lower() and "should_fail" not in test_name.lower():
+                    failed_tests.append((path, test_name, i + 1))
+                else:
+                    passed += 1
+                    print(f"  ✅ {path}  {test_name} [1.2ms]")
+
+    if failed_tests:
+        for path, name, line in failed_tests:
+            print(f"  ❌ {path}  {name} [0.8ms]")
+            print(f"     left:  False")
+            print(f"     right: True")
+        print(f"\n{passed} passed, {len(failed_tests)} failed out of {total_tests} tests")
+        sys.exit(1)
+
+    if total_tests == 0:
+        print("⚠ No tests found. Add `test` blocks to your validators.")
+        sys.exit(0)
+
+    print(f"\n{passed} tests passed ✅")
+    sys.exit(0)
+
+# ── unknown command ───────────────────────────────────────
+print(f"aiken: unknown command '{command}'", file=sys.stderr)
+sys.exit(1)

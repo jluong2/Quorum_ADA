@@ -1,0 +1,28 @@
+{
+  "preamble": {
+    "title": "identity_registry",
+    "version": "0.0.0"
+  },
+  "validators": [
+    {
+      "title": "fos_types",
+      "compiledCode": "mock_compiled_cbor_fos_types",
+      "hash": "mock_script_hash_abcdef1234"
+    },
+    {
+      "title": "identity_registry",
+      "compiledCode": "mock_compiled_cbor_identity_registry",
+      "hash": "mock_script_hash_abcdef1234"
+    },
+    {
+      "title": "governance",
+      "compiledCode": "mock_compiled_cbor_governance",
+      "hash": "mock_script_hash_abcdef1234"
+    },
+    {
+      "title": "treasury",
+      "compiledCode": "mock_compiled_cbor_treasury",
+      "hash": "mock_script_hash_abcdef1234"
+    }
+  ]
+}

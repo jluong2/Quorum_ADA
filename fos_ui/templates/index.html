@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quorum — Cardano On-Chain Governance</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- ── Top nav ──────────────────────────────────────── -->
+  <nav class="topnav">
+    <div class="nav-left">
+      <div class="logo">
+        <span class="logo-icon">⚖</span>
+        <span class="logo-text">Quorum</span>
+        <span class="logo-sub">On-Chain Governance</span>
+      </div>
+      <div class="nav-pills">
+        <span id="network-pill" class="pill pill-blue">PREPROD</span>
+        <span id="mode-pill" class="pill pill-amber">MOCK</span>
+      </div>
+    </div>
+    <div class="nav-right">
+      <div class="clock" id="clock"></div>
+      <button id="wallet-btn" class="wallet-btn" onclick="openWalletModal()">
+        <span class="wallet-icon">⬡</span>
+        <span id="wallet-label">Connect Wallet</span>
+      </button>
+      <button class="icon-btn" onclick="loadState()" title="Refresh">
+        <span id="refresh-icon">↻</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ── Stats bar ─────────────────────────────────────── -->
+  <div class="stats-bar">
+    <div class="stat-item">
+      <span class="stat-label">Treasury</span>
+      <span class="stat-value green" id="stat-treasury">— ₳</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat-item">
+      <span class="stat-label">Active Proposals</span>
+      <span class="stat-value" id="stat-active">—</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat-item">
+      <span class="stat-label">Need Action</span>
+      <span class="stat-value amber" id="stat-action">—</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat-item">
+      <span class="stat-label">Members</span>
+      <span class="stat-value" id="stat-members">—</span>
+    </div>
+    <div class="stat-divider"></div>
+    <div class="stat-item">
+      <span class="stat-label">Registry v</span>
+      <span class="stat-value mono" id="stat-version">—</span>
+    </div>
+  </div>
+
+  <!-- ── Main layout ────────────────────────────────────── -->
+  <div class="layout">
+
+    <!-- Left sidebar -->
+    <aside class="sidebar">
+
+      <!-- Treasury card -->
+      <div class="card" id="treasury-card">
+        <div class="card-header">
+          <span class="card-title">Treasury</span>
+          <span class="dot dot-green pulse"></span>
+        </div>
+        <div class="treasury-balance" id="t-balance">—</div>
+        <div class="treasury-label">ADA Available</div>
+        <div class="treasury-divider"></div>
+        <div class="treasury-meta">
+          <div class="tm-row">
+            <span class="tm-key">Per-proposal cap</span>
+            <span class="tm-val" id="t-cap">—</span>
+          </div>
+          <div class="tm-row">
+            <span class="tm-key">Governance hash</span>
+            <span class="tm-val mono tiny" id="t-gov">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Registry card -->
+      <div class="card" id="registry-card">
+        <div class="card-header">
+          <span class="card-title">Identity Registry</span>
+          <span class="version-badge" id="reg-version">v—</span>
+        </div>
+        <div id="members-list">
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+        </div>
+      </div>
+
+      <!-- Activity feed -->
+      <div class="card" id="activity-card">
+        <div class="card-header">
+          <span class="card-title">Activity</span>
+          <button class="micro-btn" onclick="loadAudit()">↻</button>
+        </div>
+        <div id="activity-feed">
+          <div class="empty-state small">No activity yet</div>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- Main content -->
+    <main class="main-content">
+      <div class="content-header">
+        <h2 class="content-title">Governance Proposals</h2>
+        <div class="content-header-right">
+          <div class="content-meta" id="proposals-meta"></div>
+          <button class="btn-new-proposal" onclick="openProposalModal()">+ New Proposal</button>
+        </div>
+      </div>
+      <div id="error-banner" class="error-banner hidden"></div>
+      <div id="proposals-grid" class="proposals-grid">
+        <div class="skeleton-card"></div>
+        <div class="skeleton-card"></div>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- ── Wallet modal ───────────────────────────────────── -->
+  <div id="wallet-modal" class="overlay hidden" onclick="closeWalletModal(event)">
+    <div class="modal wallet-modal-box">
+      <div class="modal-header">
+        <h3>Connect Wallet</h3>
+        <button class="close-btn" onclick="closeWalletModal()">✕</button>
+      </div>
+      <div id="wallet-list" class="wallet-list"></div>
+      <div class="modal-footer muted">
+        Wallet keys never leave your browser. Transactions are signed locally via CIP-30.
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Transaction modal ─────────────────────────────── -->
+  <div id="tx-modal" class="overlay hidden" onclick="closeTxModal(event)">
+    <div class="modal tx-modal-box">
+      <div class="modal-header">
+        <h3 id="tx-title">Transaction</h3>
+        <button class="close-btn" onclick="closeTxModal()">✕</button>
+      </div>
+
+      <div class="tx-body">
+        <div id="tx-details" class="tx-details"></div>
+
+        <div class="tx-actions-row">
+          <div id="tx-wallet-action" class="tx-wallet-section hidden">
+            <div class="wallet-connected-badge" id="tx-wallet-badge"></div>
+            <button id="tx-sign-btn" class="btn-primary" onclick="signAndSubmit()">
+              Sign &amp; Submit
+            </button>
+          </div>
+          <div id="tx-no-wallet" class="">
+            <p class="muted small">Connect a wallet above to sign and submit on-chain, or copy the transaction summary below.</p>
+          </div>
+        </div>
+
+        <details class="tx-raw">
+          <summary>Raw transaction summary</summary>
+          <pre id="tx-raw-body"></pre>
+        </details>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-ghost" onclick="closeTxModal()">Cancel</button>
+        <button class="btn-ghost" onclick="copyTx()">Copy Summary</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── New Proposal modal ───────────────────────────────── -->
+  <div id="propose-modal" class="overlay hidden" onclick="closeProposalModal(event)">
+    <div class="modal propose-modal-box">
+      <div class="modal-header">
+        <h3>New Governance Proposal</h3>
+        <button class="close-btn" onclick="closeProposalModal()">✕</button>
+      </div>
+
+      <div class="propose-body">
+
+        <!-- Description -->
+        <div class="form-group">
+          <label class="form-label" for="p-description">Description</label>
+          <input type="text" id="p-description" class="form-input"
+                 placeholder="Brief description visible to all voters…" maxlength="200">
+        </div>
+
+        <!-- Action type selector -->
+        <div class="form-group">
+          <label class="form-label">Action Type</label>
+          <div class="action-type-grid">
+            <button class="action-type-btn active" data-action="TreasuryTransfer"   onclick="selectActionType('TreasuryTransfer')">  <span class="at-icon">💸</span><span class="at-name">Treasury Transfer</span>     </button>
+            <button class="action-type-btn"        data-action="OffChainDecision"   onclick="selectActionType('OffChainDecision')">   <span class="at-icon">📋</span><span class="at-name">Off-Chain Decision</span>    </button>
+            <button class="action-type-btn"        data-action="UpdateRegistryMember" onclick="selectActionType('UpdateRegistryMember')"><span class="at-icon">👤</span><span class="at-name">Update Member</span>         </button>
+            <button class="action-type-btn"        data-action="RotateAdmin"        onclick="selectActionType('RotateAdmin')">         <span class="at-icon">🔑</span><span class="at-name">Rotate Admin</span>           </button>
+          </div>
+        </div>
+
+        <!-- Dynamic action fields injected here by JS -->
+        <div id="p-action-fields"></div>
+
+        <!-- Timeline -->
+        <div class="form-section-title">Timeline</div>
+        <div class="form-row">
+          <div class="form-group half">
+            <label class="form-label" for="p-deadline-hours">Vote Deadline <span class="form-hint">hours from now</span></label>
+            <input type="number" id="p-deadline-hours" class="form-input" value="72" min="1" max="8760">
+          </div>
+          <div class="form-group half">
+            <label class="form-label" for="p-timelock-hours">Timelock <span class="form-hint">hours after deadline</span></label>
+            <input type="number" id="p-timelock-hours" class="form-input" value="24" min="0" max="8760">
+          </div>
+        </div>
+
+        <!-- Quorum -->
+        <div class="form-group">
+          <label class="form-label" for="p-quorum">Quorum Threshold <span class="form-hint" id="p-quorum-hint">pts required to pass</span></label>
+          <input type="number" id="p-quorum" class="form-input" value="5" min="1">
+        </div>
+
+        <!-- Error -->
+        <div id="p-error" class="form-error hidden"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-ghost" onclick="closeProposalModal()">Cancel</button>
+        <button class="btn-primary" id="p-submit-btn" onclick="submitProposal()">Build Transaction →</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

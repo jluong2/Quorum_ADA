@@ -1,0 +1,8 @@
+[package]
+name = "identity_registry"
+version = "0.0.0"
+license = "Apache-2.0"
+description = "Identity registry validator — foundation layer of the Cardano Financial OS"
+
+[dependencies]
+aiken-lang/stdlib = { version = "~>2.1.0", source = "github" }
