@@ -53,9 +53,17 @@ export FOS_REGISTRY_SCRIPT_HASH="..."    # from identity_registry/plutus.json
 export FOS_GOVERNANCE_SCRIPT_HASH="..."
 export FOS_TREASURY_SCRIPT_HASH="..."
 export FOS_AGENT_KEY_HASH="..."          # agent's VerificationKeyHash
-export FOS_AGENT_SIGNING_KEY="..."       # hex private key
+export FOS_AGENT_SIGNING_KEY="..."       # 32-byte Ed25519 hex private key
+export FOS_COLLATERAL_REF="..."          # "txhash#index" — UTxO with 5+ ADA for Plutus collateral
 export FOS_MAX_AUTO_TRANSFER_LOVELACE="5000000"   # per-proposal safety cap
-export FOS_AUTONOMOUS_MODE="false"       # set true to submit without confirmation
+export FOS_AUTONOMOUS_MODE="false"       # set true to sign + submit without confirmation
+```
+
+CIP-171 on-chain contract verification:
+```bash
+# Publish cryptographic link between deployed script hashes and source commit
+python3 scripts/verify.py --dry-run   # preview metadata without submitting
+python3 scripts/verify.py             # publish to chain (requires DEPLOY_* env vars)
 ```
 
 ### Aiken Quorum contracts
@@ -131,7 +139,7 @@ treasury  ──ref──▶  governance  ──ref──▶  identity registry
 A `ExecuteTransfer` transaction includes both the governance UTxO and the identity registry as reference inputs simultaneously.
 
 ### `lib/fos_types.ak` — the integration contract
-the i
+
 All cross-validator types live here. The most important:
 
 - **`RegistryDatum`** — `members: List<RegistryMember>` + `admin` + `version`. The `version` field is monotonically incremented on every mutation. Governance and treasury pin this at proposal creation; a registry update invalidates open proposals.
@@ -161,32 +169,36 @@ All cross-validator types live here. The most important:
 | **Does** | Generates Aiken code | Submits Cardano transactions |
 | **Reads** | Aiken docs via RAG | Chain state via Blockfrost |
 | **Tools** | file I/O, aiken CLI | read_fos_state, cast_vote, execute_proposal, execute_treasury_transfer |
-| **Output** | `.ak` source files | `UnsignedTransaction` descriptors |
+| **Output** | `.ak` source files | Signed + submitted transactions (autonomous) or `UnsignedTransaction` descriptors (confirmation mode) |
 
 ### Package layout
 
 - **`fos_agent/config.py`** — All configuration from env vars. `is_configured()` checks whether all required script hashes and the Blockfrost key are set. Without them, `BlockfrostClient` runs in mock mode.
 - **`fos_agent/types.py`** — Python mirrors of every type in `lib/fos_types.ak`, with `from_cbor_hex()` classmethods for deserializing Blockfrost inline datums. CBOR encoding: records → `Constr(0, fields)`, enum variant N → `Constr(N, [])`, `Bool True` → `Constr(1, [])`. Requires `cbor2`.
-- **`fos_agent/chain.py`** — `BlockfrostClient` wraps the Blockfrost REST API and returns typed Python objects. `read_fos_state()` snapshots all three validators in one call and returns a `FOSState`. `FOSState` has derived properties: `executable_proposals`, `expirable_proposals`, `executed_proposals` — computed from quorum, timelock, and current time.
-- **`fos_agent/transactions.py`** — One builder per FOS action. Each returns an `UnsignedTransaction` (inputs, reference\_inputs, outputs, redeemers, validity range, required signers). The agent decides **what** to do; a separate wallet/signing layer assembles the CBOR and submits. The builders assert the three-layer security conditions before constructing — e.g. `build_execute_transfer_tx` raises if `status != Executed`, action is not `TreasuryTransfer`, or `lovelace > max_transfer_lovelace`.
-- **`fos_agent/agent.py`** — `FOSAgent` dispatches tool calls to `chain.py` / `transactions.py`. `run_fos_agent(instruction)` is the one-shot entry point; `run_monitor(interval)` wraps it in a polling loop. Every decision is written to `.fos_audit.jsonl` via the `write_audit_log` tool.
+- **`fos_agent/chain.py`** — `BlockfrostClient` wraps the Blockfrost REST API and returns typed Python objects. `read_fos_state()` snapshots all three validators in one call and returns a `FOSState`. `FOSState` has derived properties: `executable_proposals`, `expirable_proposals`, `executed_proposals`, `unreachable_quorum_proposals` — computed from quorum, timelock, registry score, and current time. `unreachable_quorum_proposals` flags active proposals where the max possible yes score is already below the quorum threshold so the agent can expire them immediately.
+- **`fos_agent/transactions.py`** — One builder per FOS action. Each returns an `UnsignedTransaction` (inputs, reference\_inputs, outputs, redeemers, validity range, required signers). The builders assert the three-layer security conditions before constructing — e.g. `build_execute_transfer_tx` raises if `status != Executed`, action is not `TreasuryTransfer`, or `lovelace > max_transfer_lovelace`.
+- **`fos_agent/agent.py`** — `FOSAgent` dispatches tool calls to `chain.py` / `transactions.py`. `run_fos_agent(instruction)` is the one-shot entry point; `run_monitor(interval)` wraps it in a polling loop. Every decision is written to `.fos_audit.jsonl` via the `write_audit_log` tool. When `AUTONOMOUS_MODE=true`, `_sign_and_submit()` is called after each transaction builder — it fetches the agent's wallet UTxOs, loads compiled scripts from `plutus.json`, calls `signing.build_signed_transaction()`, and submits via Blockfrost.
 
 ### The agent loop flow for a treasury payment
 
 ```
 read_fos_state
   → find active TreasuryTransfer proposals
+  → check unreachable_quorum_proposals → expire immediately if found
   → check registry.version == proposal.registry_version  (staleness guard)
   → check recipient is Active member
   → cast_vote (yes/no) + write_audit_log
+      ↳ AUTONOMOUS_MODE: sign → Blockfrost evaluate → sign final → submit
 
 [later, after quorum + timelock]
 
 execute_proposal       → flips status Voting → Executed
+    ↳ AUTONOMOUS_MODE: sign → evaluate → sign final → submit
 execute_treasury_transfer → builds UnsignedTransaction with:
     inputs:           [treasury UTxO]
     reference_inputs: [governance UTxO, registry UTxO]
     outputs:          [recipient payment, treasury continuing output]
+    ↳ AUTONOMOUS_MODE: sign → evaluate → sign final → submit
 ```
 
 ### Six agent-level safety rules (system prompt enforced)
@@ -206,11 +218,26 @@ execute_treasury_transfer → builds UnsignedTransaction with:
 - ExpireProposal → flips status `Voting → Expired`
 - Deploy → serializes initial `RegistryDatum` / `TreasuryDatum`
 
-**`fos_agent/signing.py`** — PyCardano integration.  Two capabilities:
-1. **Address derivation** (no network call): `script_hash_to_address(hash, network)` and `pkh_to_enterprise_address(pkh, network)`.  Called by `transactions.py`; falls back to mock bech32 strings if PyCardano is absent.
-2. **`sign_transaction(unsigned_tx, signing_key_hex, *, plutus_scripts_hex, collateral_ref, change_address, change_lovelace)`** — builds a `TransactionBody`, estimates fees (155 381 + 44×bytes + script units), signs with Ed25519, returns CBOR hex ready for Blockfrost `/tx/submit`.
+**`fos_agent/signing.py`** — PyCardano integration. Three capabilities:
+1. **Address derivation**: `script_hash_to_address(hash, network)` and `pkh_to_enterprise_address(pkh, network)`. Falls back to mock strings if PyCardano is absent.
+2. **Slot conversion**: `posix_ms_to_slot(posix_ms, blockfrost_url, project_id)` — converts POSIX milliseconds to Cardano slot numbers by anchoring to `Blockfrost /blocks/latest` (post-Shelley: 1 slot = 1 second). Falls back to a preprod constant if Blockfrost is unavailable.
+3. **`build_signed_transaction(...)`** — two-phase pipeline:
+   - Phase 1: build draft transaction with placeholder execution units, convert ms → slots
+   - Phase 2: call `Blockfrost /utils/txs/evaluate` to get real Plutus memory/CPU units
+   - Phase 3: rebuild with real units for accurate fee, sign with Ed25519, return CBOR hex
 
-Both modules degrade gracefully without their optional dependency — `datums.py` raises `AssertionError` if `cbor2` is missing; `signing.py` returns mock strings if `PyCardano` is absent.
+Both modules degrade gracefully — `datums.py` raises `AssertionError` if `cbor2` is missing; `signing.py` returns mock strings if `PyCardano` is absent.
+
+### CIP-171 contract verification (`scripts/verify.py`)
+
+Publishes an on-chain verification record (Cardano metadata label 1984) linking deployed script hashes to the exact git commit and Aiken version used to compile them. Anyone can independently verify by cloning the repo, checking out the pinned commit, running `aiken build`, and comparing the resulting hashes.
+
+```bash
+python3 scripts/verify.py --dry-run   # preview metadata without submitting
+python3 scripts/verify.py             # publish (requires DEPLOY_* env vars + real plutus.json)
+```
+
+Guards against publishing mock hashes — exits with an error if `plutus.json` contains placeholder values from the test fixture.
 
 ### Preprod deployment (`scripts/deploy.py`)
 

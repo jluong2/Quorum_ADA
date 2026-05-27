@@ -114,7 +114,7 @@ python3 -c "from fos_agent import run_monitor; run_monitor(300)"
 5. Write every decision to `.fos_audit.jsonl` — approved, rejected, skipped, or anomaly
 6. With `FOS_AUTONOMOUS_MODE=false` (default), describe intent and wait for human confirmation
 
-The agent builds `UnsignedTransaction` descriptors — structured specifications of inputs, outputs, redeemers, and validity range — passed to a separate signing layer. The agent never holds a private key.
+In default mode the agent builds `UnsignedTransaction` descriptors and waits for human confirmation. In autonomous mode (`FOS_AUTONOMOUS_MODE=true`) it signs and submits transactions directly using a two-phase flow: draft → Blockfrost evaluate (real execution units) → sign → submit.
 
 ---
 
@@ -147,14 +147,25 @@ export DEPLOY_SIGNING_KEY="<32-byte Ed25519 hex>"
 export DEPLOY_KEY_HASH="<vkey hash>"
 export DEPLOY_COLLATERAL_REF="<txhash#index>"
 python3 scripts/deploy.py
-# Prints REGISTRY/GOVERNANCE/TREASURY script hashes to export
+# Prints REGISTRY/GOVERNANCE/TREASURY script hashes — copy them
 
-# 3. Start the agent
+# 3. Publish on-chain contract verification (CIP-171)
+python3 scripts/verify.py --dry-run   # preview first
+python3 scripts/verify.py             # publishes metadata label 1984 on-chain
+# Anyone can now verify your contracts match the source at the pinned commit
+
+# 4. Start the agent (confirmation mode — describes intent, waits for approval)
 export FOS_REGISTRY_SCRIPT_HASH="..."
 export FOS_GOVERNANCE_SCRIPT_HASH="..."
 export FOS_TREASURY_SCRIPT_HASH="..."
 export FOS_AGENT_KEY_HASH="..."
 export ANTHROPIC_API_KEY="..."
+python3 -c "from fos_agent import run_monitor; run_monitor(300)"
+
+# 4a. OR run in autonomous mode (signs and submits without confirmation)
+export FOS_AGENT_SIGNING_KEY="<32-byte Ed25519 hex>"   # agent's private key
+export FOS_COLLATERAL_REF="<txhash#index>"              # UTxO with 5+ ADA
+export FOS_AUTONOMOUS_MODE="true"
 python3 -c "from fos_agent import run_monitor; run_monitor(300)"
 ```
 
