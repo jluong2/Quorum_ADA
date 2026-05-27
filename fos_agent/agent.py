@@ -92,7 +92,8 @@ Call execute_treasury_transfer only if:
 - If registry version mismatches a proposal, log it and DO NOT vote or execute.
   The proposer must recreate the proposal against the current registry.
 - If quorum is mathematically unreachable (active voters' max score < quorum),
-  call expire_proposal rather than waiting for the deadline.
+  call expire_proposal immediately — do not wait for the deadline. The state
+  report flags these under governance.unreachable_quorum so you never miss them.
 - If the same error repeats after 2 tool calls, surface it to the user.
 
 ## Audit Log
@@ -300,6 +301,7 @@ class FOSAgent:
                 "active": len(s.active_proposals),
                 "executable_now": len(s.executable_proposals),
                 "expirable_now": len(s.expirable_proposals),
+                "unreachable_quorum": [u.ref for u, _ in s.unreachable_quorum_proposals],
                 "executed_awaiting_transfer": len(s.executed_proposals),
                 "proposals": proposal_rows,
             },

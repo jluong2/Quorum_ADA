@@ -73,6 +73,17 @@ class FOSState:
         """Executed proposals that haven't triggered a treasury payment yet."""
         return [(u, d) for u, d in self.proposals if d.is_executed]
 
+    @property
+    def unreachable_quorum_proposals(self) -> list[tuple[UTxO, GovernanceDatum]]:
+        """Active proposals where quorum can never be reached — all remaining voters
+        could vote yes and the threshold still wouldn't be met."""
+        max_score = self.registry.max_possible_yes_score()
+        return [
+            (u, d) for u, d in self.active_proposals
+            if max_score < d.quorum
+            and self.current_time_ms <= d.vote_deadline
+        ]
+
 
 class BlockfrostClient:
     """
