@@ -14,6 +14,9 @@ Most governance tooling assumes a human is reading dashboards and clicking butto
 - It reasons about *whether* it should act — not just *how*
 - Every decision (approved, rejected, skipped, anomaly) is written to an append-only audit log
 - In default mode it describes its intent and waits for human confirmation before submitting anything
+- **Liquid democracy**: members can delegate their voting weight to another member; delegators who vote directly override their own delegation
+- **Webhook alerts**: Discord/Slack notifications for new proposals, quorum reached, approaching deadlines, high-value transfers, and at-risk proposals (< 48 h, < 50% participation)
+- **Proposal history**: dashboard Active/History tab shows executed and expired proposals with full vote records
 
 ---
 
@@ -111,7 +114,7 @@ python3 -c "from fos_agent import run_fos_agent; run_fos_agent('Check state and 
 python3 -c "from fos_agent import run_monitor; run_monitor(300)"
 ```
 
-**Seven enforced safety rules (baked into the system prompt):**
+**Eight enforced safety rules (baked into the system prompt):**
 
 1. Only vote Yes on `TreasuryTransfer` if `lovelace ≤ max_transfer_lovelace` and recipient is Active
 2. Never vote or execute if `registry.version != proposal.registry_version` — flag it and require a new proposal

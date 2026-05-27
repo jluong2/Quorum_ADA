@@ -23,6 +23,12 @@ pub type RegistryAction {
   }
   TransferAdmin { new_admin: fos_types.VerificationKeyHash }
   GovernanceApproval
+  // Self-service delegation: signed by the member; no admin key or governance required.
+  // Incrementing version invalidates open proposals — delegation changes affect quorum.
+  SetDelegate {
+    key_hash: fos_types.VerificationKeyHash,
+    new_delegate: Option<fos_types.VerificationKeyHash>,
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────
@@ -51,12 +57,24 @@ fn update_member_by_key(
     members,
     fn(m) {
       if m.key_hash == key {
-        RegistryMember {
-          key_hash: m.key_hash,
-          role: new_role,
-          joined_at: m.joined_at,
-          status: new_status,
-        }
+        RegistryMember { ..m, role: new_role, status: new_status }
+      } else {
+        m
+      }
+    },
+  )
+}
+
+fn update_delegate(
+  members: List<RegistryMember>,
+  key: fos_types.VerificationKeyHash,
+  new_delegate: Option<fos_types.VerificationKeyHash>,
+) -> List<RegistryMember> {
+  list.map(
+    members,
+    fn(m) {
+      if m.key_hash == key {
+        RegistryMember { ..m, delegate: new_delegate }
       } else {
         m
       }
@@ -165,6 +183,32 @@ validator {
         expect list.has(extra_signatories, datum.admin)
         new_datum.admin == new_admin && new_datum.members == datum.members
       }
+
+      SetDelegate { key_hash, new_delegate } -> {
+        // Signed by the member themselves — no admin key required.
+        expect list.has(extra_signatories, key_hash)
+        // Member must exist and be active.
+        expect Some(member) =
+          list.find(datum.members, fn(m) { m.key_hash == key_hash })
+        expect member.status == Active
+        // Cannot delegate to self.
+        expect new_delegate != Some(key_hash)
+        // If setting a delegate, target must be active and must not themselves
+        // have a delegate (no delegation chains — single-hop only).
+        let target_ok =
+          when new_delegate is {
+            None -> True
+            Some(target) ->
+              when list.find(datum.members, fn(m) { m.key_hash == target }) is {
+                Some(target_m) ->
+                  target_m.status == Active && target_m.delegate == None
+                None -> False
+              }
+          }
+        expect target_ok
+        new_datum.members == update_delegate(datum.members, key_hash, new_delegate)
+          && new_datum.admin == datum.admin
+      }
     }
   }
 }
@@ -184,6 +228,7 @@ test member_exists_finds_registered_key() {
       role: Member,
       joined_at: 1000,
       status: Active,
+      delegate: None,
     }
   member_exists([m], #"deadbeef")
 }
@@ -195,40 +240,55 @@ test member_exists_misses_unknown_key() {
       role: Member,
       joined_at: 1000,
       status: Active,
+      delegate: None,
     }
   !member_exists([m], #"cafebabe")
 }
 
 test add_member_no_duplicate_logic() {
   let m =
-    RegistryMember { key_hash: #"aa", role: Member, joined_at: 100, status: Active }
+    RegistryMember {
+      key_hash: #"aa",
+      role: Member,
+      joined_at: 100,
+      status: Active,
+      delegate: None,
+    }
   !member_exists([], #"aa") && member_exists([m], #"aa")
 }
 
 test remove_member_by_key_removes_correct_member() {
   let m1 =
-    RegistryMember { key_hash: #"aa", role: Member, joined_at: 100, status: Active }
+    RegistryMember {
+      key_hash: #"aa",
+      role: Member,
+      joined_at: 100,
+      status: Active,
+      delegate: None,
+    }
   let m2 =
     RegistryMember {
       key_hash: #"bb",
       role: Treasurer,
       joined_at: 200,
       status: Active,
+      delegate: None,
     }
   remove_member_by_key([m1, m2], #"aa") == [m2]
 }
 
 test remove_member_by_key_preserves_others() {
   let m1 =
-    RegistryMember { key_hash: #"aa", role: Member, joined_at: 100, status: Active }
+    RegistryMember { key_hash: #"aa", role: Member, joined_at: 100, status: Active, delegate: None }
   let m2 =
-    RegistryMember { key_hash: #"bb", role: Member, joined_at: 200, status: Active }
+    RegistryMember { key_hash: #"bb", role: Member, joined_at: 200, status: Active, delegate: None }
   let m3 =
     RegistryMember {
       key_hash: #"cc",
       role: Observer,
       joined_at: 300,
       status: Active,
+      delegate: None,
     }
   let result = remove_member_by_key([m1, m2, m3], #"bb")
   list.length(result) == 2 && !member_exists(result, #"bb")
@@ -236,7 +296,13 @@ test remove_member_by_key_preserves_others() {
 
 test update_member_by_key_changes_role_and_status() {
   let m =
-    RegistryMember { key_hash: #"aa", role: Member, joined_at: 100, status: Active }
+    RegistryMember {
+      key_hash: #"aa",
+      role: Member,
+      joined_at: 100,
+      status: Active,
+      delegate: None,
+    }
   let updated = update_member_by_key([m], #"aa", Treasurer, Suspended)
   when updated is {
     [um] ->
@@ -247,18 +313,36 @@ test update_member_by_key_changes_role_and_status() {
 
 test update_member_by_key_leaves_others_unchanged() {
   let m1 =
-    RegistryMember { key_hash: #"aa", role: Member, joined_at: 100, status: Active }
+    RegistryMember { key_hash: #"aa", role: Member, joined_at: 100, status: Active, delegate: None }
   let m2 =
     RegistryMember {
       key_hash: #"bb",
       role: Observer,
       joined_at: 200,
       status: Active,
+      delegate: None,
     }
   let result = update_member_by_key([m1, m2], #"aa", Admin, Active)
   when result is {
     [updated, unchanged] ->
       updated.role == Admin && unchanged.role == Observer && unchanged.key_hash == #"bb"
+    _ -> False
+  }
+}
+
+test update_member_by_key_preserves_delegate() {
+  // Updating role/status must not clear an existing delegate.
+  let m =
+    RegistryMember {
+      key_hash: #"aa",
+      role: Member,
+      joined_at: 100,
+      status: Active,
+      delegate: Some(#"bb"),
+    }
+  let updated = update_member_by_key([m], #"aa", Treasurer, Active)
+  when updated is {
+    [um] -> um.delegate == Some(#"bb")
     _ -> False
   }
 }
@@ -277,6 +361,7 @@ test transfer_admin_changes_only_admin() {
         role: Member,
         joined_at: 100,
         status: Active,
+        delegate: None,
       },
     ]
   let new_datum =
@@ -287,6 +372,62 @@ test transfer_admin_changes_only_admin() {
       governance_script_hash: #"aabb",
     }
   new_datum.admin == #"bbbbbb" && new_datum.members == members
+}
+
+test set_delegate_update_delegate_sets_field() {
+  let m =
+    RegistryMember {
+      key_hash: #"aa",
+      role: Member,
+      joined_at: 100,
+      status: Active,
+      delegate: None,
+    }
+  let updated = update_delegate([m], #"aa", Some(#"bb"))
+  when updated is {
+    [um] -> um.delegate == Some(#"bb") && um.key_hash == #"aa"
+    _ -> False
+  }
+}
+
+test set_delegate_clear_delegate() {
+  let m =
+    RegistryMember {
+      key_hash: #"aa",
+      role: Member,
+      joined_at: 100,
+      status: Active,
+      delegate: Some(#"bb"),
+    }
+  let updated = update_delegate([m], #"aa", None)
+  when updated is {
+    [um] -> um.delegate == None
+    _ -> False
+  }
+}
+
+test set_delegate_leaves_other_members_unchanged() {
+  let m1 =
+    RegistryMember {
+      key_hash: #"aa",
+      role: Member,
+      joined_at: 100,
+      status: Active,
+      delegate: None,
+    }
+  let m2 =
+    RegistryMember {
+      key_hash: #"bb",
+      role: Admin,
+      joined_at: 50,
+      status: Active,
+      delegate: None,
+    }
+  let updated = update_delegate([m1, m2], #"aa", Some(#"bb"))
+  when updated is {
+    [um1, um2] -> um1.delegate == Some(#"bb") && um2.delegate == None
+    _ -> False
+  }
 }
 
 test governance_approval_preserves_governance_script_hash() {

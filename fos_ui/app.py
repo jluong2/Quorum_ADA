@@ -33,6 +33,7 @@ from fos_agent.transactions import (
     build_execute_proposal_tx,
     build_expire_proposal_tx,
     build_execute_transfer_tx,
+    build_set_delegate_tx,
 )
 from fos_agent.types import (
     GovernanceDatum,
@@ -136,6 +137,8 @@ def _state_to_dict(s: FOSState) -> dict:
             "status": STATUS_NAMES.get(m.status, "?"),
             "vote_weight": m.vote_weight,
             "can_vote": m.can_vote,
+            "delegate": m.delegate,
+            "delegate_short": (m.delegate[:8] + "…" + m.delegate[-8:]) if m.delegate else None,
         }
         for m in reg.members
     ]
@@ -394,6 +397,32 @@ def api_expire():
             change_address="",
             current_time_ms=s.current_time_ms,
             governance_script_hash=config.GOVERNANCE_SCRIPT_HASH,
+        )
+        return jsonify({"ok": True, "summary": tx.summary(), "inputs": tx.inputs})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/delegate", methods=["POST"])
+def api_delegate():
+    """Build a set-delegate UnsignedTransaction for liquid democracy."""
+    body = request.json or {}
+    member_key_hash = body.get("member_key_hash", "").strip()
+    new_delegate = body.get("new_delegate") or None  # None clears delegation
+    if new_delegate:
+        new_delegate = new_delegate.strip() or None
+
+    if not member_key_hash:
+        return jsonify({"ok": False, "error": "member_key_hash required"}), 400
+
+    try:
+        s = _get_state()
+        tx = build_set_delegate_tx(
+            registry_utxo=s.registry_utxo,
+            registry_datum=s.registry,
+            member_key_hash=member_key_hash,
+            new_delegate=new_delegate,
+            registry_script_hash=config.REGISTRY_SCRIPT_HASH,
         )
         return jsonify({"ok": True, "summary": tx.summary(), "inputs": tx.inputs})
     except Exception as e:

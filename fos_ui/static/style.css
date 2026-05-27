@@ -1276,6 +1276,21 @@ details[open] .tx-raw summary::before { content: '▼ '; }
   word-break: break-all;
 }
 
+/* ── Member delegation ───────────────────────────────────── */
+.member-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.delegate-btn {
+  opacity: 0;
+  transition: opacity .15s;
+}
+.member-row:hover .delegate-btn {
+  opacity: 1;
+}
+
 /* ── Proposal tabs ───────────────────────────────────────── */
 .tab-bar {
   display: flex;

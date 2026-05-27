@@ -77,15 +77,23 @@ class RegistryMember:
     role: int
     joined_at: int  # POSIX ms block time
     status: int
+    delegate: Optional[str] = None  # hex key hash of delegate (liquid democracy), or None
 
     @classmethod
     def from_cbor(cls, val) -> RegistryMember:
         f = _f(val)
+        delegate = None
+        if len(f) > 4:
+            alt = _alt(f[4])
+            if alt == 0:  # Some(value)
+                delegate = bytes(_f(f[4])[0]).hex()
+            # alt == 1 → None
         return cls(
             key_hash=bytes(f[0]).hex(),
             role=_alt(f[1]),
             joined_at=int(f[2]),
             status=_alt(f[3]),
+            delegate=delegate,
         )
 
     @property
@@ -317,13 +325,24 @@ class GovernanceDatum:
         return self.status == PROPOSAL_EXPIRED
 
     def weighted_yes_score(self, registry: RegistryDatum) -> int:
-        """Weighted yes vote count — mirrors count_weighted_yes in governance.ak."""
+        """Weighted yes vote count — mirrors count_weighted_yes in governance.ak.
+
+        Liquid democracy: when a yes voter has delegators who did NOT vote
+        directly, those delegators' weights are added to the voter's score.
+        """
+        direct_voters = {v.voter for v in self.votes}
+        yes_voters = {v.voter for v in self.votes if v.approve}
         score = 0
-        for vote in self.votes:
-            if vote.approve:
-                member = registry.find_member(vote.voter)
-                if member and member.is_active:
-                    score += member.vote_weight
+        for voter_key in yes_voters:
+            member = registry.find_member(voter_key)
+            if not member or not member.is_active:
+                continue
+            score += member.vote_weight
+            # Add weight from active delegators who haven't voted directly
+            for m in registry.members:
+                if (m.delegate == voter_key and m.is_active
+                        and m.key_hash not in direct_voters):
+                    score += m.vote_weight
         return score
 
     def supermajority_met(self, registry: RegistryDatum) -> bool:

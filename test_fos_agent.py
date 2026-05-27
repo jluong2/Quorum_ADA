@@ -758,6 +758,92 @@ test("proposal agent drafts OffChainDecision successfully",       test_proposal_
 test("proposal agent stores draft for submission",                test_proposal_agent_draft_stored)
 
 
+# ─── 11. Vote delegation ───────────────────────────────────
+
+print("\n── 11. Vote delegation ───────────────────────────────")
+
+from fos_agent.transactions import build_set_delegate_tx
+
+def make_two_member_registry():
+    admin = RegistryMember(key_hash="aa" * 28, role=ROLE_ADMIN, joined_at=100, status=STATUS_ACTIVE)
+    mem   = RegistryMember(key_hash="bb" * 28, role=ROLE_MEMBER, joined_at=200, status=STATUS_ACTIVE)
+    return RegistryDatum(members=[admin, mem], admin="aa" * 28, version=1)
+
+def test_delegation_adds_weight():
+    # bb delegates to aa; aa votes yes → aa gets 3 + 1 = 4
+    reg = make_two_member_registry()
+    reg.members[1] = RegistryMember(key_hash="bb" * 28, role=ROLE_MEMBER,
+                                    joined_at=200, status=STATUS_ACTIVE, delegate="aa" * 28)
+    votes = [make_vote("aa" * 28, True)]
+    prop = make_proposal(votes=votes, quorum=4)
+    eq(prop.weighted_yes_score(reg), 4)
+
+def test_delegation_overridden_by_direct_vote():
+    # bb delegates to aa, but bb also votes directly → aa gets 3 (own only), bb gets 1
+    reg = make_two_member_registry()
+    reg.members[1] = RegistryMember(key_hash="bb" * 28, role=ROLE_MEMBER,
+                                    joined_at=200, status=STATUS_ACTIVE, delegate="aa" * 28)
+    votes = [make_vote("aa" * 28, True), make_vote("bb" * 28, True)]
+    prop = make_proposal(votes=votes, quorum=4)
+    eq(prop.weighted_yes_score(reg), 4)  # 3 + 1, no double count
+
+def test_delegation_no_effect_when_delegate_votes_no():
+    # bb delegates to aa, aa votes no → yes score = 0 (bb's weight doesn't flow anywhere)
+    reg = make_two_member_registry()
+    reg.members[1] = RegistryMember(key_hash="bb" * 28, role=ROLE_MEMBER,
+                                    joined_at=200, status=STATUS_ACTIVE, delegate="aa" * 28)
+    votes = [make_vote("aa" * 28, False)]
+    prop = make_proposal(votes=votes)
+    eq(prop.weighted_yes_score(reg), 0)
+
+def test_build_set_delegate_tx_sets_delegate():
+    reg = make_two_member_registry()
+    utxo = make_utxo("reg_tx", 0, 2_000_000)
+    tx = build_set_delegate_tx(utxo, reg, "bb" * 28, "aa" * 28)
+    ok("SetDelegate" in tx.description)
+    eq(tx.required_signers, ["bb" * 28])
+    eq(len(tx.inputs), 1)
+    eq(len(tx.outputs), 1)
+
+def test_build_set_delegate_tx_clears_delegate():
+    reg = make_two_member_registry()
+    reg.members[1] = RegistryMember(key_hash="bb" * 28, role=ROLE_MEMBER,
+                                    joined_at=200, status=STATUS_ACTIVE, delegate="aa" * 28)
+    utxo = make_utxo("reg_tx", 0, 2_000_000)
+    tx = build_set_delegate_tx(utxo, reg, "bb" * 28, None)
+    ok("clear" in tx.description or "None" in tx.description or "(clear)" in tx.description)
+    eq(tx.required_signers, ["bb" * 28])
+
+def test_build_set_delegate_tx_rejects_self_delegation():
+    reg = make_two_member_registry()
+    utxo = make_utxo("reg_tx", 0, 2_000_000)
+    try:
+        build_set_delegate_tx(utxo, reg, "aa" * 28, "aa" * 28)
+        assert False, "should have raised"
+    except AssertionError as e:
+        ok("self" in str(e).lower())
+
+def test_build_set_delegate_tx_rejects_chain():
+    # aa delegates to bb, then bb tries to delegate to aa — chain would be created
+    reg = make_two_member_registry()
+    reg.members[0] = RegistryMember(key_hash="aa" * 28, role=ROLE_ADMIN,
+                                    joined_at=100, status=STATUS_ACTIVE, delegate="bb" * 28)
+    utxo = make_utxo("reg_tx", 0, 2_000_000)
+    try:
+        build_set_delegate_tx(utxo, reg, "bb" * 28, "aa" * 28)
+        assert False, "should have raised — target already has a delegate"
+    except AssertionError as e:
+        ok("chain" in str(e).lower() or "delegate" in str(e).lower())
+
+test("delegation adds delegator weight to delegate's yes vote",   test_delegation_adds_weight)
+test("delegation overridden when delegator votes directly",        test_delegation_overridden_by_direct_vote)
+test("delegation has no effect when delegate votes no",            test_delegation_no_effect_when_delegate_votes_no)
+test("build_set_delegate_tx produces correct tx structure",        test_build_set_delegate_tx_sets_delegate)
+test("build_set_delegate_tx clears delegation when None",          test_build_set_delegate_tx_clears_delegate)
+test("build_set_delegate_tx rejects self-delegation",              test_build_set_delegate_tx_rejects_self_delegation)
+test("build_set_delegate_tx rejects delegation chains",            test_build_set_delegate_tx_rejects_chain)
+
+
 # ─── Results ──────────────────────────────────────────────
 
 total = passed + failed

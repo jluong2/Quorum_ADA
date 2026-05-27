@@ -43,10 +43,50 @@ fn already_voted(votes: List<VoteRecord>, key: VerificationKeyHash) -> Bool {
   list.any(votes, fn(v) { v.voter == key })
 }
 
+// Effective weight of a voter = own weight + weights of active delegators
+// who have not cast a direct vote of their own.
+fn effective_vote_weight(
+  members: List<RegistryMember>,
+  direct_voters: List<VerificationKeyHash>,
+  voter_key: VerificationKeyHash,
+) -> Int {
+  let own_weight =
+    when list.find(members, fn(m) { m.key_hash == voter_key }) is {
+      Some(m) ->
+        if m.status == Active {
+          vote_weight(m.role)
+        } else {
+          0
+        }
+      None -> 0
+    }
+  // Add weight from members who delegated to voter_key, are active,
+  // and have NOT cast a direct vote (their own vote overrides delegation).
+  let delegated_weight =
+    list.foldl(
+      members,
+      0,
+      fn(m, acc) {
+        if m.delegate == Some(voter_key) && m.status == Active && !list.has(
+          direct_voters,
+          m.key_hash,
+        ) {
+          acc + vote_weight(m.role)
+        } else {
+          acc
+        }
+      },
+    )
+  own_weight + delegated_weight
+}
+
 fn count_weighted_yes(
   votes: List<VoteRecord>,
   members: List<RegistryMember>,
 ) -> Int {
+  // All keys that cast any direct vote (yes or no); used to exclude
+  // delegators who have voted directly — their weight stays with them.
+  let direct_voters = list.map(votes, fn(v) { v.voter })
   list.foldl(
     votes,
     0,
@@ -56,7 +96,7 @@ fn count_weighted_yes(
         when list.find(members, fn(m) { m.key_hash == v.voter }) is {
           Some(reg_member) ->
             if reg_member.status == Active {
-              acc + vote_weight(reg_member.role)
+              acc + effective_vote_weight(members, direct_voters, v.voter)
             } else {
               acc
             }
@@ -279,18 +319,26 @@ test count_weighted_yes_sums_correctly() {
   // Admin yes (3) + Member yes (1) + Treasurer nay (0) = 4
   let members =
     [
-      RegistryMember { key_hash: #"aa", role: Admin, joined_at: 100, status: Active },
+      RegistryMember {
+        key_hash: #"aa",
+        role: Admin,
+        joined_at: 100,
+        status: Active,
+        delegate: None,
+      },
       RegistryMember {
         key_hash: #"bb",
         role: Member,
         joined_at: 200,
         status: Active,
+        delegate: None,
       },
       RegistryMember {
         key_hash: #"cc",
         role: Treasurer,
         joined_at: 300,
         status: Active,
+        delegate: None,
       },
     ]
   let votes =
@@ -310,6 +358,7 @@ test count_weighted_yes_excludes_suspended_members() {
         role: Admin,
         joined_at: 100,
         status: Suspended,
+        delegate: None,
       },
     ]
   count_weighted_yes([VoteRecord { voter: #"aa", approve: True }], members) == 0
@@ -323,6 +372,7 @@ test count_weighted_yes_excludes_observer_votes() {
         role: Observer,
         joined_at: 100,
         status: Active,
+        delegate: None,
       },
     ]
   count_weighted_yes([VoteRecord { voter: #"aa", approve: True }], members) == 0
@@ -332,12 +382,19 @@ test quorum_passes_when_score_met() {
   // Admin (3) + Treasurer (2) = 5 ≥ quorum of 5
   let members =
     [
-      RegistryMember { key_hash: #"aa", role: Admin, joined_at: 100, status: Active },
+      RegistryMember {
+        key_hash: #"aa",
+        role: Admin,
+        joined_at: 100,
+        status: Active,
+        delegate: None,
+      },
       RegistryMember {
         key_hash: #"bb",
         role: Treasurer,
         joined_at: 200,
         status: Active,
+        delegate: None,
       },
     ]
   let votes =
@@ -357,12 +414,14 @@ test quorum_rejects_when_score_not_met() {
         role: Member,
         joined_at: 100,
         status: Active,
+        delegate: None,
       },
       RegistryMember {
         key_hash: #"bb",
         role: Member,
         joined_at: 200,
         status: Active,
+        delegate: None,
       },
     ]
   let votes =
@@ -381,6 +440,7 @@ test vote_does_not_count_unknown_voters() {
         role: Admin,
         joined_at: 100,
         status: Active,
+        delegate: None,
       },
     ]
   // #"bb" is not in the registry — their vote scores 0
@@ -390,12 +450,19 @@ test vote_does_not_count_unknown_voters() {
 test all_nay_votes_score_zero() {
   let members =
     [
-      RegistryMember { key_hash: #"aa", role: Admin, joined_at: 100, status: Active },
+      RegistryMember {
+        key_hash: #"aa",
+        role: Admin,
+        joined_at: 100,
+        status: Active,
+        delegate: None,
+      },
       RegistryMember {
         key_hash: #"bb",
         role: Treasurer,
         joined_at: 200,
         status: Active,
+        delegate: None,
       },
     ]
   let votes =
@@ -404,6 +471,112 @@ test all_nay_votes_score_zero() {
       VoteRecord { voter: #"bb", approve: False },
     ]
   count_weighted_yes(votes, members) == 0
+}
+
+// ─── Delegation tests ────────────────────────────────────
+
+test delegation_adds_delegator_weight_to_delegate() {
+  // Member #"bb" (weight 1) delegates to Admin #"aa" (weight 3).
+  // Admin votes yes → effective weight = 3 + 1 = 4.
+  let members =
+    [
+      RegistryMember {
+        key_hash: #"aa",
+        role: Admin,
+        joined_at: 100,
+        status: Active,
+        delegate: None,
+      },
+      RegistryMember {
+        key_hash: #"bb",
+        role: Member,
+        joined_at: 200,
+        status: Active,
+        delegate: Some(#"aa"),
+      },
+    ]
+  let votes = [VoteRecord { voter: #"aa", approve: True }]
+  count_weighted_yes(votes, members) == 4
+}
+
+test delegation_overridden_when_delegator_votes_directly() {
+  // Member #"bb" delegates to Admin #"aa", but #"bb" also votes directly.
+  // #"aa" vote: 3 (own) — no delegated weight from #"bb" (bb voted directly).
+  // #"bb" vote: 1 (own) — delegation irrelevant since they voted directly.
+  // Total yes = 4.
+  let members =
+    [
+      RegistryMember {
+        key_hash: #"aa",
+        role: Admin,
+        joined_at: 100,
+        status: Active,
+        delegate: None,
+      },
+      RegistryMember {
+        key_hash: #"bb",
+        role: Member,
+        joined_at: 200,
+        status: Active,
+        delegate: Some(#"aa"),
+      },
+    ]
+  let votes =
+    [
+      VoteRecord { voter: #"aa", approve: True },
+      VoteRecord { voter: #"bb", approve: True },
+    ]
+  count_weighted_yes(votes, members) == 4
+}
+
+test delegation_no_weight_when_delegate_votes_no() {
+  // Member #"bb" delegates to Admin #"aa", but #"aa" votes No.
+  // #"bb" has not voted — their delegated weight flows to #"aa".
+  // #"aa" voted no → not counted in yes. Total yes = 0.
+  let members =
+    [
+      RegistryMember {
+        key_hash: #"aa",
+        role: Admin,
+        joined_at: 100,
+        status: Active,
+        delegate: None,
+      },
+      RegistryMember {
+        key_hash: #"bb",
+        role: Member,
+        joined_at: 200,
+        status: Active,
+        delegate: Some(#"aa"),
+      },
+    ]
+  let votes = [VoteRecord { voter: #"aa", approve: False }]
+  count_weighted_yes(votes, members) == 0
+}
+
+test suspended_delegator_contributes_no_weight() {
+  // Suspended Member #"bb" delegates to Admin #"aa".
+  // Suspended members lose voting power — delegation has no effect.
+  let members =
+    [
+      RegistryMember {
+        key_hash: #"aa",
+        role: Admin,
+        joined_at: 100,
+        status: Active,
+        delegate: None,
+      },
+      RegistryMember {
+        key_hash: #"bb",
+        role: Member,
+        joined_at: 200,
+        status: Suspended,
+        delegate: Some(#"aa"),
+      },
+    ]
+  let votes = [VoteRecord { voter: #"aa", approve: True }]
+  // Only #"aa"'s own weight (3); suspended #"bb" contributes nothing.
+  count_weighted_yes(votes, members) == 3
 }
 
 // ─── Supermajority tests ─────────────────────────────────
@@ -434,18 +607,26 @@ test max_possible_yes_score_sums_active_members() {
   // Admin(3) + Treasurer(2) + suspended_member(0) = 5
   let members =
     [
-      RegistryMember { key_hash: #"aa", role: Admin, joined_at: 100, status: Active },
+      RegistryMember {
+        key_hash: #"aa",
+        role: Admin,
+        joined_at: 100,
+        status: Active,
+        delegate: None,
+      },
       RegistryMember {
         key_hash: #"bb",
         role: Treasurer,
         joined_at: 200,
         status: Active,
+        delegate: None,
       },
       RegistryMember {
         key_hash: #"cc",
         role: Member,
         joined_at: 300,
         status: Suspended,
+        delegate: None,
       },
     ]
   max_possible_yes_score(members) == 5

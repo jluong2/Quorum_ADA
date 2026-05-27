@@ -53,11 +53,17 @@ def _encode(val) -> bytes:
 # ─── Internal encoders ────────────────────────────────────
 
 def _encode_member(m: RegistryMember):
+    # Option<VerificationKeyHash>: Some(v) = Constr(0,[bytes]), None = Constr(1,[])
+    delegate_cbor = (
+        _constr(0, [bytes.fromhex(m.delegate)]) if m.delegate is not None
+        else _constr(1, [])
+    )
     return _constr(0, [
         bytes.fromhex(m.key_hash),
         _constr(m.role, []),
         m.joined_at,
         _constr(m.status, []),
+        delegate_cbor,
     ])
 
 

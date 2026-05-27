@@ -105,6 +105,22 @@ def _execute_redeemer(input_ref: str) -> Redeemer:
 def _expire_redeemer(input_ref: str) -> Redeemer:
     return Redeemer(input_ref=input_ref, data={"constructor": 2, "fields": []})
 
+def _set_delegate_redeemer(
+    input_ref: str, key_hash: str, new_delegate: Optional[str]
+) -> Redeemer:
+    delegate_field = (
+        {"constructor": 0, "fields": [{"bytes": new_delegate}]}
+        if new_delegate is not None
+        else {"constructor": 1, "fields": []}
+    )
+    return Redeemer(
+        input_ref=input_ref,
+        data={"constructor": 5, "fields": [  # SetDelegate = variant 5 in RegistryAction
+            {"bytes": key_hash},
+            delegate_field,
+        ]},
+    )
+
 def _execute_transfer_redeemer(input_ref: str, governance_ref: str) -> Redeemer:
     tx_hash, idx = governance_ref.split("#")
     return Redeemer(
@@ -512,4 +528,77 @@ def build_create_proposal_tx(
         validity_start_ms=current_time_ms,
         required_signers=[proposer_key_hash],
         metadata={"msg": ["Quorum: create proposal"]},
+    )
+
+
+def build_set_delegate_tx(
+    registry_utxo: UTxO,
+    registry_datum: RegistryDatum,
+    member_key_hash: str,
+    new_delegate: Optional[str],
+    registry_script_hash: str = "",
+) -> UnsignedTransaction:
+    """
+    Set or clear a member's vote delegate (liquid democracy).
+
+    Self-service: signed by the member; no admin key or governance required.
+    Increments registry version — invalidates open proposals (same as all mutations).
+
+    Single-hop only: the target must not itself have a delegate (no chains).
+    A member cannot delegate to themselves.
+    """
+    member = registry_datum.find_member(member_key_hash)
+    assert member is not None, f"Member {member_key_hash[:12]}… not found in registry"
+    assert member.is_active, f"Member {member_key_hash[:12]}… is not active"
+    assert new_delegate != member_key_hash, "Cannot delegate to self"
+
+    if new_delegate is not None:
+        target = registry_datum.find_member(new_delegate)
+        assert target is not None, \
+            f"Delegate target {new_delegate[:12]}… not found in registry"
+        assert target.is_active, \
+            f"Delegate target {new_delegate[:12]}… is not active"
+        assert target.delegate is None, \
+            f"Delegate target {new_delegate[:12]}… already has a delegate (no chains)"
+
+    new_members = [
+        dataclasses.replace(m, delegate=new_delegate)
+        if m.key_hash == member_key_hash else m
+        for m in registry_datum.members
+    ]
+    new_registry = dataclasses.replace(
+        registry_datum,
+        members=new_members,
+        version=registry_datum.version + 1,
+    )
+
+    net = _network_from_config()
+    registry_address = (
+        _script_address(registry_script_hash, net)
+        if registry_script_hash
+        else registry_utxo.ref.split("#")[0]
+    )
+
+    try:
+        from .datums import registry_datum_cbor_hex
+        new_datum_hex = registry_datum_cbor_hex(new_registry)
+    except (ImportError, AssertionError):
+        new_datum_hex = "<registry_datum_cbor_hex>"
+
+    action_desc = f"→ {new_delegate[:12]}…" if new_delegate else "(clear)"
+
+    return UnsignedTransaction(
+        description=f"SetDelegate {member_key_hash[:12]}… {action_desc}",
+        inputs=[registry_utxo.ref],
+        reference_inputs=[],
+        outputs=[
+            TxOutput(
+                address=registry_address,
+                lovelace=registry_utxo.lovelace,
+                datum_hex=new_datum_hex,
+            ),
+        ],
+        redeemers=[_set_delegate_redeemer(registry_utxo.ref, member_key_hash, new_delegate)],
+        required_signers=[member_key_hash],
+        metadata={"msg": [f"Quorum: set delegate {action_desc}"]},
     )

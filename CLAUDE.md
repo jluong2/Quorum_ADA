@@ -145,7 +145,8 @@ A `ExecuteTransfer` transaction includes both the governance UTxO and the identi
 
 All cross-validator types live here. The most important:
 
-- **`RegistryDatum`** — `members: List<RegistryMember>` + `admin` + `version` + `governance_script_hash`. The `version` field is monotonically incremented on every mutation. Governance and treasury pin this at proposal creation; a registry update invalidates open proposals. `governance_script_hash` is the hash of the governance validator — immutable after deployment, used by the `GovernanceApproval` redeemer to authenticate governance reference inputs.
+- **`RegistryMember`** — `key_hash`, `role`, `joined_at`, `status`, and now `delegate: Option<VerificationKeyHash>`. The `delegate` field implements liquid democracy: if set, this member's voting weight flows to the target when the target votes (and this member has not voted directly). Single-hop only — the target's `delegate` must be `None`.
+- **`RegistryDatum`** — `members: List<RegistryMember>` + `admin` + `version` + `governance_script_hash`. The `version` field is monotonically incremented on every mutation (including `SetDelegate`). Governance and treasury pin this at proposal creation; a registry update invalidates open proposals. `governance_script_hash` is the hash of the governance validator — immutable after deployment, used by the `GovernanceApproval` redeemer to authenticate governance reference inputs.
 - **`GovernanceDatum`** — includes `action: ProposalAction`, `status: ProposalStatus`, `registry_ref: OutputReference`, `registry_version: Int`.
 - **`ProposalAction`** — the typed union that connects governance to other validators: `TreasuryTransfer { recipient, lovelace, memo }` (treasury pays out), `RotateAdmin` (registry rotates admin key), `UpdateRegistryMember` (registry updates a member), `OffChainDecision` (no on-chain execution). Treasury and registry validators each pattern-match on only their relevant action variants.
 
@@ -173,6 +174,10 @@ All cross-validator types live here. The most important:
 
 **Suspended members lose voting power retroactively.** `count_weighted_yes` checks `reg_member.status == Active` at execution time, not at vote-cast time. A member suspended after voting has their yes-vote discounted when quorum is tallied.
 
+**Delegation is single-hop and self-service.** `SetDelegate` (constructor 5 in `RegistryAction`) lets a member update their own `delegate` field without admin or governance approval — they sign the tx themselves. The on-chain validator enforces: no self-delegation, target must be active, target's `delegate` must be `None` (no chains). Increments version like all mutations, invalidating open proposals.
+
+**Delegated weight is carried by the delegate, not the delegator.** `effective_vote_weight(members, direct_voters, voter_key)` in `governance.ak` adds the weights of all active members who (a) delegated to `voter_key`, and (b) have not cast a direct vote of their own. A delegator who votes directly overrides the delegation — their weight stays with their own ballot.
+
 ---
 
 ## Quorum Operator Agent Architecture
@@ -191,9 +196,9 @@ All cross-validator types live here. The most important:
 - **`fos_agent/config.py`** — All configuration from env vars. `is_configured()` checks whether all required script hashes and the Blockfrost key are set. Without them, `BlockfrostClient` runs in mock mode.
 - **`fos_agent/types.py`** — Python mirrors of every type in `lib/fos_types.ak`, with `from_cbor_hex()` classmethods for deserializing Blockfrost inline datums. CBOR encoding: records → `Constr(0, fields)`, enum variant N → `Constr(N, [])`, `Bool True` → `Constr(1, [])`. Requires `cbor2`.
 - **`fos_agent/chain.py`** — `BlockfrostClient` wraps the Blockfrost REST API and returns typed Python objects. `read_fos_state()` snapshots all three validators in one call and returns a `FOSState`. `FOSState` has derived properties: `executable_proposals`, `expirable_proposals`, `executed_proposals`, `unreachable_quorum_proposals`, `executed_awaiting_registry` — computed from quorum, timelock, registry score, action type, and current time. `unreachable_quorum_proposals` flags active proposals where the max possible yes score is already below the quorum threshold so the agent can expire them immediately. `executed_awaiting_registry` flags Executed proposals with `RotateAdmin` or `UpdateRegistryMember` actions that still need `execute_registry_action` called.
-- **`fos_agent/transactions.py`** — One builder per FOS action. Each returns an `UnsignedTransaction` (inputs, reference\_inputs, outputs, redeemers, validity range, required signers). The builders assert security conditions before constructing — e.g. `build_execute_transfer_tx` raises if `status != Executed`, action is not `TreasuryTransfer`, or `lovelace > max_transfer_lovelace`. `build_execute_registry_action_tx` uses redeemer constructor 4 (`GovernanceApproval`) and applies the mutation in Python before serialising the new datum.
+- **`fos_agent/transactions.py`** — One builder per FOS action. Each returns an `UnsignedTransaction` (inputs, reference\_inputs, outputs, redeemers, validity range, required signers). The builders assert security conditions before constructing — e.g. `build_execute_transfer_tx` raises if `status != Executed`, action is not `TreasuryTransfer`, or `lovelace > max_transfer_lovelace`. `build_execute_registry_action_tx` uses redeemer constructor 4 (`GovernanceApproval`) and applies the mutation in Python before serialising the new datum. `build_set_delegate_tx` uses redeemer constructor 5 (`SetDelegate`) and enforces no-self, no-chain, and active-target checks before building.
 - **`fos_agent/agent.py`** — `FOSAgent` dispatches tool calls to `chain.py` / `transactions.py`. `run_fos_agent(instruction)` is the one-shot entry point; `run_monitor(interval)` wraps it in a polling loop, calling `AlertManager.check()` before each agent turn. Every decision is written to `.fos_audit.jsonl` via the `write_audit_log` tool. When `AUTONOMOUS_MODE=true`, `_sign_and_submit()` is called after each transaction builder — it fetches the agent's wallet UTxOs, loads compiled scripts from `plutus.json`, calls `signing.build_signed_transaction()`, and submits via Blockfrost.
-- **`fos_agent/alerts.py`** — `AlertManager` fires Discord/Slack webhook notifications for: new proposals, quorum reached, deadline within 24 h, high-value transfer proposals, treasury below threshold. Deduplicates via an in-memory `_fired` set so each alert fires at most once per process lifetime. Configure: `DISCORD_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `FOS_TREASURY_ALERT_ADA`.
+- **`fos_agent/alerts.py`** — `AlertManager` fires Discord/Slack webhook notifications for: new proposals, quorum reached, deadline within 24 h, high-value transfer proposals, treasury below threshold, and **at-risk proposals** (< 48 h left, quorum unmet, yes votes below 50% of maximum possible). Deduplicates via an in-memory `_fired` set so each alert fires at most once per process lifetime. Configure: `DISCORD_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `FOS_TREASURY_ALERT_ADA`.
 - **`fos_agent/proposal_agent.py`** — `run_proposal_agent(instruction)` drafts and submits governance proposals from natural language. Tools: `read_fos_state`, `draft_proposal` (validates feasibility, enforces supermajority quorum for high-stakes actions, returns preview), `submit_proposal` (only called after user confirms). Signs and submits autonomously when `AUTONOMOUS_MODE=true`.
 
 ### The agent loop — treasury payment
@@ -308,13 +313,16 @@ HOST=0.0.0.0 python3 fos_ui/app.py   # expose to LAN
 Security defaults: binds to `127.0.0.1` (loopback), debug off, CSRF Origin check on all mutating routes. Set `HOST=0.0.0.0` to expose to LAN; set `FLASK_DEBUG=1` for development.
 
 Routes:
-- `GET  /`             — dashboard HTML
-- `GET  /api/state`    — full Quorum state JSON
-- `POST /api/vote`     — `{proposal_ref, approve}` → `UnsignedTransaction.summary()`
-- `POST /api/execute`  — `{proposal_ref}` → execute-proposal tx
-- `POST /api/expire`   — `{proposal_ref}` → expire-proposal tx
-- `POST /api/transfer` — `{governance_ref}` → execute-transfer tx
-- `GET  /api/audit`    — last 50 audit log entries
+- `GET  /`               — dashboard HTML (Active / History tab bar; member delegate buttons)
+- `GET  /api/state`      — full Quorum state JSON (includes `delegate` / `delegate_short` per member)
+- `POST /api/propose`    — `{action_type, description, …}` → create-proposal tx
+- `POST /api/vote`       — `{proposal_ref, approve}` → `UnsignedTransaction.summary()`
+- `POST /api/execute`    — `{proposal_ref}` → execute-proposal tx
+- `POST /api/expire`     — `{proposal_ref}` → expire-proposal tx
+- `POST /api/transfer`   — `{governance_ref}` → execute-transfer tx
+- `POST /api/delegate`   — `{member_key_hash, new_delegate}` → set-delegate tx (liquid democracy)
+- `GET  /api/audit`      — last 50 audit log entries
+- `POST /api/executor/run` — `{proposal_ref}` → run executor agent for an Executed proposal
 
 The UI builds the transaction descriptor and shows the summary.  The operator copies it to their wallet (Eternl, Nami, or `cardano-cli`) for final signing and submission — the web server never holds a private key.
 

@@ -38,7 +38,9 @@ The source of truth for who belongs to the organisation. Every member is recorde
 - A **status**: Active, Suspended, or Removed
 - A `joined_at` timestamp
 
-The registry stores a monotonically increasing **version number**. Every time a member is added, suspended, or removed, the version increments. This version is the key to keeping governance safe — see Section 4.
+Every member now also stores an optional **delegate** key hash — the liquid democracy field. When set, the member's voting weight flows to their delegate at execution time (unless the member votes directly, which overrides delegation). Delegation is single-hop: the target's `delegate` must be unset. Members update their own delegate via the self-service `SetDelegate` redeemer — no admin key or governance vote required.
+
+The registry stores a monotonically increasing **version number**. Every time a member is added, suspended, removed, or changes their delegate, the version increments. This version is the key to keeping governance safe — see Section 4.
 
 The registry also stores the **governance script hash** — the compiled hash of the `governance.ak` validator. This field is immutable after deployment and is used by the `GovernanceApproval` redeemer to authenticate governance reference inputs without requiring the admin key.
 
@@ -81,15 +83,37 @@ A Claude AI-powered Python agent that watches the chain and acts on pending gove
 - **One-shot**: called once, reads state, acts, exits
 - **Continuous monitor**: polls every N seconds in a loop
 
-The agent has seven enforced safety rules baked into its system prompt:
+The agent has eight enforced safety rules baked into its system prompt:
 
 1. Only vote Yes on `TreasuryTransfer` if the amount is within the configured cap and the recipient is an Active member
 2. Never vote or execute if `registry.version != proposal.registry_version`
 3. Only call Execute if the timelock has cleared and quorum is met
-4. Only trigger a treasury transfer after the Execute transaction is confirmed on-chain
-5. Only call `execute_registry_action` after the Execute transaction is confirmed; action must be `RotateAdmin` or `UpdateRegistryMember`
-6. Write every decision (approved, rejected, skipped, anomaly) to an audit log
-7. In non-autonomous mode, describe intent and wait for human confirmation
+4. For `RotateAdmin` or `TreasuryTransfer > 10 ADA`, additionally verify a 2/3 on-chain supermajority (`yes_score * 3 >= max_possible_score * 2`) before calling Execute
+5. Only trigger a treasury transfer after the Execute transaction is confirmed on-chain
+6. Only call `execute_registry_action` after the Execute transaction is confirmed; action must be `RotateAdmin` or `UpdateRegistryMember`
+7. Write every decision (approved, rejected, skipped, anomaly) to an audit log
+8. In non-autonomous mode, describe intent and wait for human confirmation
+
+**AlertManager** (`fos_agent/alerts.py`) runs at the start of every monitor cycle and fires Discord/Slack webhook notifications for:
+- New proposals detected
+- Quorum threshold reached on a proposal
+- Proposal deadline within 24 hours
+- High-value transfer proposals (above the configured threshold)
+- Treasury balance below the alert threshold
+- **At-risk proposals**: fewer than 48 hours remaining, quorum not met, and current yes-score below 50% of the maximum achievable — fires once per proposal per process lifetime
+
+Configure webhooks via `DISCORD_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, and `FOS_TREASURY_ALERT_ADA`.
+
+**Proposal creation agent** (`fos_agent/proposal_agent.py`) drafts and submits governance proposals from natural language. It reads current on-chain state, validates feasibility (recipient exists, amount within cap, registry state), recommends quorum thresholds (enforcing supermajority for high-stakes actions), shows a preview for human review, and submits on confirmation:
+
+```bash
+python3 -c "
+from fos_agent.proposal_agent import run_proposal_agent
+run_proposal_agent('Propose a 5 ADA grant to member abc123 for Q2 dev work')
+"
+```
+
+**Delegation-aware vote counting**: when tallying `yes_score`, the agent (and the on-chain `count_weighted_yes` function) applies liquid democracy. For each yes-voter, the tally adds their own vote weight plus the weight of any Active members who have delegated to them and did not vote directly. Delegators who cast a vote directly always override their delegation — their weight is counted for whichever side they voted on, not added to their delegate.
 
 Every action the agent considers produces an `UnsignedTransaction` descriptor — a structured specification of inputs, outputs, redeemers, and validity range — that is passed to the signing layer separately. The agent never holds a private key.
 
@@ -106,7 +130,8 @@ Three modules handle the full transaction lifecycle:
   | `build_execute_proposal_tx` | Flip status `Voting → Executed` once quorum + timelock clear |
   | `build_expire_proposal_tx` | Flip status `Voting → Expired` after deadline without quorum |
   | `build_execute_transfer_tx` | Spend treasury UTxO and pay the approved recipient |
-  | `build_execute_registry_action_tx` | Apply a `RotateAdmin` or `UpdateRegistryMember` mutation to the registry using the `GovernanceApproval` redeemer (constructor index 4) — no admin key needed |
+  | `build_execute_registry_action_tx` | Apply a `RotateAdmin` or `UpdateRegistryMember` mutation via `GovernanceApproval` redeemer (constructor 4) — no admin key needed |
+  | `build_set_delegate_tx` | Set or clear a member's vote delegate — self-service, signed by member, uses `SetDelegate` redeemer (constructor 5) |
 - **`datums.py`** — serialises Python datum objects back to on-chain CBOR hex (the inverse of parsing). Used to construct the inline datum on the continuing output for every validator spend.
 - **`signing.py`** — integrates PyCardano to derive addresses from script hashes and verification key hashes, estimate fees, and sign a completed transaction body with an Ed25519 private key.
 
@@ -118,13 +143,15 @@ A Flask web application that renders the live on-chain state and lets a human op
 
 | Route | Description |
 |---|---|
-| `GET /` | Main dashboard (HTML/CSS/JS) |
-| `GET /api/state` | Full chain state as JSON (includes enriched proposal fields) |
+| `GET /` | Main dashboard — Active/History tab bar; member rows show delegate badges and ⇒ button |
+| `GET /api/state` | Full chain state as JSON (proposals, registry with `delegate` fields, treasury) |
 | `POST /api/propose` | Build a create-proposal transaction |
 | `POST /api/vote` | Build a cast-vote transaction |
 | `POST /api/execute` | Build an execute-proposal transaction |
 | `POST /api/expire` | Build an expire-proposal transaction |
 | `POST /api/transfer` | Build a treasury transfer transaction |
+| `POST /api/delegate` | Build a set-delegate transaction `{member_key_hash, new_delegate}` |
+| `POST /api/executor/run` | Run the executor agent for an Executed proposal |
 | `GET /api/audit` | Last 50 audit log entries |
 | `POST /api/tx/submit` | Submit a signed CBOR hex to the chain via Blockfrost |
 | `GET /api/wallet/balance` | ADA balance for an address (used by the wallet connect flow) |
@@ -246,7 +273,7 @@ python3 -c "from fos_agent import run_fos_agent; run_fos_agent('Check state and 
 python3 -c "from fos_agent import run_monitor; run_monitor(300)"
 ```
 
-The agent reads the full chain state via Blockfrost, identifies any proposals that are ready to vote on, execute, or expire, builds the appropriate unsigned transactions, and (in autonomous mode) submits them. Every decision is appended to `.fos_audit.jsonl`.
+Before each agent turn, `AlertManager.check()` runs and fires any pending Discord/Slack notifications. The agent then reads the full chain state via Blockfrost, identifies any proposals that are ready to vote on, execute, or expire, builds the appropriate unsigned transactions, and (in autonomous mode) submits them. Every decision is appended to `.fos_audit.jsonl`.
 
 ---
 
@@ -302,6 +329,8 @@ The treasury datum stores the `governance_script_hash` — the hash of the compi
 | `governance_script_hash` cannot be changed after deployment | Immutability assertion in all `identity_registry.ak` redeemer paths |
 | Per-proposal ADA cap | `max_transfer_lovelace` in `TreasuryDatum` |
 | State cannot disappear from chain | Continuing output requirement in all three validators |
+| Delegation is single-hop and self-service | `SetDelegate` redeemer checks `target.delegate == None`; signed by delegator only |
+| Delegated weight cannot be double-counted | `effective_vote_weight` excludes delegators who voted directly |
 | Agent decisions are auditable | Every action logged to `.fos_audit.jsonl` |
 | Human confirmation before on-chain submission | `FOS_AUTONOMOUS_MODE=false` (default) |
 
@@ -342,6 +371,9 @@ fos_agent/
   datums.py                 ← Python → on-chain CBOR serialisation
   signing.py                ← PyCardano address derivation + Ed25519 signing
   agent.py                  ← Claude AI operator agent
+  alerts.py                 ← AlertManager (Discord/Slack webhook notifications)
+  executor.py               ← Executor agent (runs post-Execute mandate on-chain actions)
+  proposal_agent.py         ← Proposal creation agent (natural language → GovernanceDatum)
 
 fos_ui/
   app.py                    ← Flask routes + state → dict serialisation

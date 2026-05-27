@@ -100,9 +100,13 @@ function renderMembers(members) {
       </div>
       <div class="member-info">
         <div class="member-hash" title="${m.key_hash}">${m.key_hash_short}</div>
-        <div class="member-role">${m.role} · ${m.status}</div>
+        <div class="member-role">${m.role} · ${m.status}${m.delegate_short ? ` · ⇒ ${escHtml(m.delegate_short)}` : ''}</div>
       </div>
-      <div class="member-weight">${m.vote_weight}w</div>
+      <div class="member-actions">
+        <div class="member-weight">${m.vote_weight}w</div>
+        <button class="micro-btn delegate-btn" title="${m.delegate ? 'Change/clear delegate' : 'Delegate vote'}"
+                onclick="openDelegateModal('${escHtml(m.key_hash)}', '${escHtml(m.delegate || '')}')">⇒</button>
+      </div>
     </div>
   `).join('');
 }
@@ -344,6 +348,60 @@ async function doRunExecutor(ref) {
     showExecutorResult(res);
   } catch (e) {
     body.innerHTML = `<div class="exec-error">⚠ ${escHtml(e.message)}</div>`;
+  }
+}
+
+// ── Delegation ─────────────────────────────────────────────
+function openDelegateModal(memberKeyHash, currentDelegate) {
+  const members = (_state?.registry?.members || []).filter(m =>
+    m.key_hash !== memberKeyHash && m.status === 'Active' && !m.delegate
+  );
+  const options = members.map(m =>
+    `<option value="${escHtml(m.key_hash)}"${currentDelegate === m.key_hash ? ' selected' : ''}>${escHtml(m.key_hash_short)} (${escHtml(m.role)})</option>`
+  ).join('');
+
+  const body = document.getElementById('exec-body');
+  const title = document.getElementById('exec-title');
+  title.textContent = 'Set Vote Delegate';
+  body.innerHTML = `
+    <p class="muted small">Choose a member to delegate your vote to, or clear an existing delegation.</p>
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">Delegate to</label>
+      <select class="form-input" id="delegate-select">
+        <option value="">(none — clear delegation)</option>
+        ${options}
+      </select>
+    </div>
+    <input type="hidden" id="delegate-member-key" value="${escHtml(memberKeyHash)}">
+    <div class="prop-actions" style="margin-top:16px">
+      <button class="btn btn-execute" onclick="doSetDelegate()">Build Transaction →</button>
+    </div>
+    <div id="delegate-error" class="form-error hidden"></div>
+  `;
+  document.getElementById('executor-modal').classList.remove('hidden');
+}
+
+async function doSetDelegate() {
+  const memberKey = document.getElementById('delegate-member-key')?.value;
+  const newDelegate = document.getElementById('delegate-select')?.value || null;
+  const errEl = document.getElementById('delegate-error');
+  if (errEl) errEl.classList.add('hidden');
+
+  try {
+    const r = await fetch('/api/delegate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ member_key_hash: memberKey, new_delegate: newDelegate }),
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error);
+
+    document.getElementById('executor-modal').classList.add('hidden');
+    _pendingTx = { endpoint: '/api/delegate', payload: {}, summary: j.summary, inputs: j.inputs };
+    showTxModal(newDelegate ? 'Set Delegate' : 'Clear Delegate', j);
+  } catch (e) {
+    if (errEl) { errEl.textContent = '⚠ ' + e.message; errEl.classList.remove('hidden'); }
+    else showError(e.message);
   }
 }
 

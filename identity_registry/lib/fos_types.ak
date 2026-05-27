@@ -27,6 +27,11 @@ pub type RegistryMember {
   role: Role,
   joined_at: Int,
   status: MemberStatus,
+  // Liquid democracy: delegate voting power to another active member.
+  // None means vote directly; Some(key) means this member's weight flows
+  // to key when key votes (and this member has not voted directly).
+  // Chains are not allowed — the target's delegate must be None.
+  delegate: Option<VerificationKeyHash>,
 }
 
 pub type RegistryDatum {
