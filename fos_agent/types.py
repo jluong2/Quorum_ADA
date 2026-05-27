@@ -114,6 +114,7 @@ class RegistryDatum:
     members: list[RegistryMember]
     admin: str   # hex
     version: int
+    governance_script_hash: str = ""  # hex — governs which governance contract can mutate this registry
 
     @classmethod
     def from_cbor_hex(cls, hex_str: str) -> RegistryDatum:
@@ -123,6 +124,7 @@ class RegistryDatum:
             members=[RegistryMember.from_cbor(m) for m in f[0]],
             admin=bytes(f[1]).hex(),
             version=int(f[2]),
+            governance_script_hash=bytes(f[3]).hex() if len(f) > 3 else "",
         )
 
     def find_member(self, key_hash: str) -> Optional[RegistryMember]:

@@ -35,6 +35,10 @@ pub type RegistryDatum {
   // Monotonically increasing.  Governance and treasury pin this at
   // proposal creation time — a registry update invalidates open proposals.
   version: Int,
+  // Script hash of the governance validator.  Immutable after deployment.
+  // Lets the registry verify that a GovernanceApproval redeemer references
+  // a genuine governance UTxO and not a counterfeit one.
+  governance_script_hash: ByteArray,
 }
 
 // ─── Governance Layer ─────────────────────────────────────

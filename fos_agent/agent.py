@@ -32,12 +32,15 @@ from .transactions import (
     build_execute_proposal_tx,
     build_expire_proposal_tx,
     build_execute_transfer_tx,
+    build_execute_registry_action_tx,
 )
 from .types import (
     GovernanceDatum,
     RegistryDatum,
+    RotateAdminAction,
     TreasuryDatum,
     TreasuryTransferAction,
+    UpdateRegistryMemberAction,
     UTxO,
 )
 
@@ -86,6 +89,17 @@ Call execute_treasury_transfer only if:
   - proposal.action == TreasuryTransfer
   - lovelace ≤ treasury.max_transfer_lovelace
   - governance_script_hash matches treasury.governance_script_hash
+
+## Decision Rules — Registry Mutation
+
+Call execute_registry_action when:
+  - governance proposal status == Executed
+  - proposal.action == RotateAdmin OR UpdateRegistryMember
+  - The state report flags these under governance.executed_awaiting_registry
+
+This uses the GovernanceApproval redeemer — no admin key is needed.
+The on-chain validator checks that the proposal was voted on against the
+current registry version (replay protection is automatic).
 
 ## Error Handling
 
@@ -191,6 +205,25 @@ TOOLS = [
         },
     },
     {
+        "name": "execute_registry_action",
+        "description": (
+            "Apply a governance-approved registry mutation (RotateAdmin or UpdateRegistryMember). "
+            "Uses the GovernanceApproval redeemer — no admin key required. "
+            "Must only be called after execute_proposal has been confirmed on-chain."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "governance_ref": {
+                    "type": "string",
+                    "description": "UTxO ref of the Executed governance proposal",
+                },
+                "reasoning": {"type": "string"},
+            },
+            "required": ["governance_ref", "reasoning"],
+        },
+    },
+    {
         "name": "write_audit_log",
         "description": "Persist a structured audit entry for every FOS decision.",
         "input_schema": {
@@ -238,6 +271,8 @@ class FOSAgent:
                 return self._expire_proposal(**inputs)
             elif tool_name == "execute_treasury_transfer":
                 return self._execute_treasury_transfer(**inputs)
+            elif tool_name == "execute_registry_action":
+                return self._execute_registry_action(**inputs)
             elif tool_name == "write_audit_log":
                 return self._write_audit_log(**inputs)
             else:
@@ -302,7 +337,14 @@ class FOSAgent:
                 "executable_now": len(s.executable_proposals),
                 "expirable_now": len(s.expirable_proposals),
                 "unreachable_quorum": [u.ref for u, _ in s.unreachable_quorum_proposals],
-                "executed_awaiting_transfer": len(s.executed_proposals),
+                "executed_awaiting_transfer": [
+                    u.ref for u, d in s.executed_proposals
+                    if isinstance(d.action, TreasuryTransferAction)
+                ],
+                "executed_awaiting_registry": [
+                    u.ref for u, d in s.executed_proposals
+                    if isinstance(d.action, (RotateAdminAction, UpdateRegistryMemberAction))
+                ],
                 "proposals": proposal_rows,
             },
             "treasury": {
@@ -375,6 +417,21 @@ class FOSAgent:
             registry_utxo=self._state.registry_utxo,
             change_address="",
             treasury_script_hash=config.TREASURY_SCRIPT_HASH,
+        )
+        result = {"success": True, "transaction": tx.summary()}
+        if config.AUTONOMOUS_MODE:
+            result["submission"] = self._sign_and_submit(tx)
+        return json.dumps(result)
+
+    def _execute_registry_action(self, governance_ref: str, reasoning: str) -> str:
+        assert self._state, "Call read_fos_state first"
+        utxo, gov = self._find_proposal(governance_ref)
+        tx = build_execute_registry_action_tx(
+            registry_utxo=self._state.registry_utxo,
+            registry_datum=self._state.registry,
+            governance_utxo=utxo,
+            governance_datum=gov,
+            registry_script_hash=config.REGISTRY_SCRIPT_HASH,
         )
         result = {"success": True, "transaction": tx.summary()}
         if config.AUTONOMOUS_MODE:

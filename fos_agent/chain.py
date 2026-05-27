@@ -70,8 +70,17 @@ class FOSState:
 
     @property
     def executed_proposals(self) -> list[tuple[UTxO, GovernanceDatum]]:
-        """Executed proposals that haven't triggered a treasury payment yet."""
+        """All proposals with status Executed."""
         return [(u, d) for u, d in self.proposals if d.is_executed]
+
+    @property
+    def executed_awaiting_registry(self) -> list[tuple[UTxO, GovernanceDatum]]:
+        """Executed proposals whose action mutates the registry (RotateAdmin or UpdateRegistryMember)."""
+        from .types import RotateAdminAction, UpdateRegistryMemberAction
+        return [
+            (u, d) for u, d in self.executed_proposals
+            if isinstance(d.action, (RotateAdminAction, UpdateRegistryMemberAction))
+        ]
 
     @property
     def unreachable_quorum_proposals(self) -> list[tuple[UTxO, GovernanceDatum]]:
@@ -232,7 +241,12 @@ def mock_fos_state() -> FOSState:
         RegistryMember(key_hash="d4e5f6a7" * 7, role=2,  joined_at=now -  5*86400000, status=1),  # Member (suspended)
         RegistryMember(key_hash="e5f6a7b8" * 7, role=3,  joined_at=now -  2*86400000, status=0),  # Observer
     ]
-    registry = RegistryDatum(members=members, admin="a1b2c3d4" * 7, version=3)
+    registry = RegistryDatum(
+        members=members,
+        admin="a1b2c3d4" * 7,
+        version=3,
+        governance_script_hash="f0a1b2c3" * 7,
+    )
     reg_utxo = UTxO(
         tx_hash="reg0tx" + "0" * 58,
         output_index=0,

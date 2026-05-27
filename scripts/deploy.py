@@ -58,7 +58,7 @@ try:
         ScriptHash,
         Transaction,
         TransactionBody,
-        TransactionHash,
+        TransactionId,
         TransactionInput,
         TransactionOutput,
         TransactionWitnessSet,
@@ -151,7 +151,7 @@ def wait_for_tx(tx_hash: str, max_wait_s: int = 120) -> bool:
 
 def parse_ref(ref: str) -> TransactionInput:
     h, i = ref.split("#")
-    return TransactionInput(TransactionHash(bytes.fromhex(h)), int(i))
+    return TransactionInput(TransactionId(bytes.fromhex(h)), int(i))
 
 
 def build_and_sign(
@@ -178,7 +178,7 @@ def build_and_sign(
         validity_start=validity_start,
         ttl=ttl,
     )
-    tx_hash = TransactionHash(body.hash())
+    tx_hash = TransactionId(body.hash())
     sig = sk.sign(tx_hash.payload)
     witness_set = TransactionWitnessSet(
         vkey_witnesses=[VerificationKeyWitness(vk, sig)]
@@ -255,6 +255,7 @@ def step4_deploy_registry(
     deployer_addr: str,
     deployer_utxos: list[dict],
     registry_address: str,
+    governance_script_hash: str,
 ) -> str:
     """Lock the initial RegistryDatum UTxO at the registry script address."""
     print("\n── Step 4: Deploy identity registry ─────────────────")
@@ -270,6 +271,7 @@ def step4_deploy_registry(
         members=[founding_member],
         admin=DEPLOY_KEY_HASH,
         version=1,
+        governance_script_hash=governance_script_hash,
     )
     datum_hex = registry_datum_cbor_hex(initial_registry)
     datum_bytes = bytes.fromhex(datum_hex)
@@ -417,6 +419,7 @@ def main():
         deployer_addr=deployer_addr,
         deployer_utxos=deployer_utxos,
         registry_address=addresses.get("identity_registry", ""),
+        governance_script_hash=governance_hash,
     )
     print(f"  Registry UTxO: {registry_ref}")
 

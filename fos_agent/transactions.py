@@ -25,8 +25,10 @@ from .types import (
     ProposalAction,
     RegistryDatum,
     RegistryMember,
+    RotateAdminAction,
     TreasuryDatum,
     TreasuryTransferAction,
+    UpdateRegistryMemberAction,
     UTxO,
     VoteRecord,
     PROPOSAL_VOTING,
@@ -351,6 +353,88 @@ def build_execute_transfer_tx(
         ],
         required_signers=[],
         metadata={"msg": [f"Quorum treasury transfer: {action.memo}"]},
+    )
+
+
+def build_execute_registry_action_tx(
+    registry_utxo: UTxO,
+    registry_datum: RegistryDatum,
+    governance_utxo: UTxO,
+    governance_datum: GovernanceDatum,
+    registry_script_hash: str = "",
+) -> UnsignedTransaction:
+    """
+    Apply a governance-approved registry mutation.
+
+    Called after execute_proposal confirms on-chain for a RotateAdmin or
+    UpdateRegistryMember proposal.  Uses the GovernanceApproval redeemer —
+    no admin key required.
+
+    reference_inputs: [governance UTxO]   — proves the proposal is Executed
+    inputs:           [registry UTxO]     — consume + re-produce with mutation applied
+    outputs:          [registry UTxO with mutation + version incremented]
+
+    On-chain replay protection: the governance proposal's registry_version must
+    equal the current registry version.  After this mutation increments the
+    version, a second attempt with the same governance UTxO will fail.
+    """
+    assert governance_datum.is_executed, \
+        "Cannot apply governance action: proposal not Executed"
+    assert isinstance(governance_datum.action, (RotateAdminAction, UpdateRegistryMemberAction)), \
+        f"Proposal action {type(governance_datum.action).__name__} cannot mutate the registry"
+
+    net = _network_from_config()
+    action = governance_datum.action
+
+    if isinstance(action, RotateAdminAction):
+        new_registry = dataclasses.replace(
+            registry_datum,
+            admin=action.new_admin,
+            version=registry_datum.version + 1,
+        )
+        description = f"GovernanceApproval: RotateAdmin → {action.new_admin[:12]}…"
+    else:
+        new_members = [
+            dataclasses.replace(m, role=action.new_role, status=action.new_status)
+            if m.key_hash == action.target_key else m
+            for m in registry_datum.members
+        ]
+        new_registry = dataclasses.replace(
+            registry_datum,
+            members=new_members,
+            version=registry_datum.version + 1,
+        )
+        description = f"GovernanceApproval: UpdateMember {action.target_key[:12]}…"
+
+    registry_address = (
+        _script_address(registry_script_hash, net)
+        if registry_script_hash
+        else registry_utxo.ref.split("#")[0]
+    )
+
+    try:
+        from .datums import registry_datum_cbor_hex
+        new_datum_hex = registry_datum_cbor_hex(new_registry)
+    except (ImportError, AssertionError):
+        new_datum_hex = "<registry_datum_cbor_hex>"
+
+    return UnsignedTransaction(
+        description=f"{description} via proposal {governance_utxo.ref}",
+        inputs=[registry_utxo.ref],
+        reference_inputs=[governance_utxo.ref],
+        outputs=[
+            TxOutput(
+                address=registry_address,
+                lovelace=registry_utxo.lovelace,
+                datum_hex=new_datum_hex,
+            ),
+        ],
+        redeemers=[Redeemer(
+            input_ref=registry_utxo.ref,
+            data={"constructor": 4, "fields": []},  # GovernanceApproval variant index 4
+        )],
+        required_signers=[],
+        metadata={"msg": [f"Quorum registry governance: {str(action)[:60]}"]},
     )
 
 

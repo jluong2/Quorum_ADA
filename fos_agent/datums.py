@@ -100,6 +100,7 @@ def registry_datum_cbor_hex(d: RegistryDatum) -> str:
         [_encode_member(m) for m in d.members],
         bytes.fromhex(d.admin),
         d.version,
+        bytes.fromhex(d.governance_script_hash) if d.governance_script_hash else b"",
     ])
     return _encode(data).hex()
 
