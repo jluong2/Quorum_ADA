@@ -1275,3 +1275,68 @@ details[open] .tx-raw summary::before { content: '▼ '; }
   font-family: var(--mono);
   word-break: break-all;
 }
+
+/* ── Proposal tabs ───────────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+}
+
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--text-3);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  transition: color .2s, border-color .2s, background .2s;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+  background: rgba(255,255,255,.03);
+}
+
+.tab-btn.active {
+  color: var(--blue);
+  border-bottom-color: var(--blue);
+  background: transparent;
+}
+
+.tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  padding: 0 6px;
+  height: 18px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: var(--r-full);
+  background: var(--border);
+  color: var(--text-3);
+  transition: background .2s, color .2s;
+}
+
+.tab-btn.active .tab-count {
+  background: var(--blue-dim);
+  color: var(--blue);
+}
+
+.proposal-card.history {
+  opacity: 0.75;
+}
+.proposal-card.history:hover {
+  opacity: 1;
+}

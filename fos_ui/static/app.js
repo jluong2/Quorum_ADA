@@ -5,6 +5,7 @@
 let _state     = null;
 let _wallet    = null;   // { name, api, address, ada }
 let _pendingTx = null;   // { summary, inputs, redeemers, endpoint, payload }
+let _activeTab = 'active';
 
 const WALLETS = [
   { key: 'eternl',  name: 'Eternl',  emoji: '🔵' },
@@ -106,18 +107,41 @@ function renderMembers(members) {
   `).join('');
 }
 
+// ── Proposal tabs ──────────────────────────────────────────
+function switchTab(tab) {
+  _activeTab = tab;
+  document.getElementById('tab-active').classList.toggle('active',  tab === 'active');
+  document.getElementById('tab-history').classList.toggle('active', tab === 'history');
+  if (_state) renderProposals(_state.governance.proposals, _state);
+}
+
 // ── Proposals ──────────────────────────────────────────────
 function renderProposals(proposals, d) {
   const grid = document.getElementById('proposals-grid');
   if (!grid) return;
-  if (!proposals.length) {
-    grid.innerHTML = '<div class="empty-state">No proposals on-chain yet.</div>';
+
+  const active  = proposals.filter(p => p.status === 'Voting');
+  const history = proposals.filter(p => p.status !== 'Voting');
+
+  // Update tab counts
+  setText('tab-count-active',  active.length);
+  setText('tab-count-history', history.length);
+
+  const visible = _activeTab === 'history' ? history : active;
+
+  if (!visible.length) {
+    const msg = _activeTab === 'history'
+      ? 'No completed proposals yet — history will appear here once proposals are executed or expired.'
+      : 'No active proposals.';
+    grid.innerHTML = `<div class="empty-state">${msg}</div>`;
     return;
   }
-  grid.innerHTML = proposals.map(p => proposalCard(p, d)).join('');
+
+  const historyClass = _activeTab === 'history' ? ' history' : '';
+  grid.innerHTML = visible.map(p => proposalCard(p, d, historyClass)).join('');
 }
 
-function proposalCard(p, d) {
+function proposalCard(p, d, extraClass = '') {
   const actionIcons = {
     TreasuryTransferAction:        '💸',
     RotateAdminAction:             '🔑',
@@ -211,7 +235,7 @@ function proposalCard(p, d) {
     btns += `<button class="btn btn-executor" onclick="doRunExecutor('${p.ref}')">⚡ Run Task</button>`;
 
   return `
-    <div class="proposal-card ${p.status_class}">
+    <div class="proposal-card ${p.status_class}${extraClass}">
 
       <!-- Header -->
       <div class="prop-header">

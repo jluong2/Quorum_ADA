@@ -93,6 +93,7 @@ class AlertManager:
           - quorum_reached        : proposal just crossed its quorum threshold
           - deadline_24h          : vote deadline ≤ 24 h away
           - high_value_transfer   : active TreasuryTransfer proposal > HIGH_VALUE_ADA
+          - at_risk               : < 48 h left, quorum not met, yes < 50% of max possible
 
         Returns list of alert messages that were dispatched.
         """
@@ -175,6 +176,24 @@ class AlertManager:
                             f"Memo: {gov.action.memo or '(none)'}"
                         )
                         send_alert(msg, "High-Value Transfer Proposal")
+                        sent.append(msg)
+
+            # ── At-risk: low participation with deadline approaching ──
+            if not gov.quorum_met(state.registry) and 0 < hours_remaining <= 48:
+                max_score = state.registry.max_possible_yes_score()
+                if max_score > 0 and yes / max_score < 0.5:
+                    key_ar = f"{ref}:at_risk"
+                    if self._once(key_ar):
+                        pct = int(yes / max_score * 100)
+                        msg = (
+                            f"Proposal is at risk of failing — low participation.\n"
+                            f"Ref: `{ref[:20]}…`\n"
+                            f"Description: {gov.description[:80]}\n"
+                            f"Deadline in: **{hours_remaining:.1f}h**\n"
+                            f"Participation: {yes}/{max_score} pts ({pct}% of max) — "
+                            f"quorum requires {gov.quorum} pts"
+                        )
+                        send_alert(msg, "Proposal At Risk")
                         sent.append(msg)
 
         return sent

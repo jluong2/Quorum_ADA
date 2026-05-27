@@ -626,10 +626,57 @@ def test_alert_tracks_new_proposals():
     mgr.check(state)
     ok(f"{prop_utxo.ref}:seen" in mgr._fired)
 
-test("AlertManager deduplicates on repeated key",    test_alert_manager_deduplicates)
-test("alert fires for low treasury balance",         test_alert_fires_for_low_treasury)
-test("alert does not repeat on second poll",         test_alert_does_not_repeat)
-test("alert tracks new proposal refs",               test_alert_tracks_new_proposals)
+def test_alert_at_risk_fires_when_low_participation():
+    # Proposal with 30h left, 0/6 score (0% of max), quorum=4 — should fire at_risk
+    mgr = AlertManager()
+    admin = make_member("admin", ROLE_ADMIN)    # weight 3
+    mem   = make_member("mem1",  ROLE_MEMBER)  # weight 1
+    reg   = RegistryDatum(members=[admin, mem], admin="admin", version=1)
+    reg_utxo = make_utxo("registry", 0)
+    reg_utxo.datum = reg
+    treas_utxo = make_utxo("treas", 0, 50_000_000)
+    treas_utxo.datum = make_treasury()
+    deadline = NOW + 30 * 3_600_000   # 30 h from now
+    prop = make_proposal(votes=[], quorum=4, vote_deadline=deadline)
+    prop_utxo = make_utxo("proposal_ar")
+    state = FOSState(
+        registry=reg, registry_utxo=reg_utxo,
+        proposals=[(prop_utxo, prop)],
+        treasury_utxo=treas_utxo, treasury_datum=make_treasury(),
+        current_time_ms=NOW,
+    )
+    mgr.check(state)
+    ok(f"{prop_utxo.ref}:at_risk" in mgr._fired, "at_risk key should be tracked")
+
+def test_alert_at_risk_does_not_fire_when_quorum_met():
+    # Same scenario but with enough yes votes — at_risk should NOT fire
+    mgr = AlertManager()
+    admin = make_member("admin", ROLE_ADMIN)   # weight 3
+    mem   = make_member("mem1",  ROLE_MEMBER)  # weight 1
+    reg   = RegistryDatum(members=[admin, mem], admin="admin", version=1)
+    reg_utxo = make_utxo("registry", 0)
+    reg_utxo.datum = reg
+    treas_utxo = make_utxo("treas", 0, 50_000_000)
+    treas_utxo.datum = make_treasury()
+    deadline = NOW + 30 * 3_600_000
+    votes = [make_vote("admin", True), make_vote("mem1", True)]
+    prop = make_proposal(votes=votes, quorum=3, vote_deadline=deadline)  # yes=4 >= quorum=3
+    prop_utxo = make_utxo("proposal_qm")
+    state = FOSState(
+        registry=reg, registry_utxo=reg_utxo,
+        proposals=[(prop_utxo, prop)],
+        treasury_utxo=treas_utxo, treasury_datum=make_treasury(),
+        current_time_ms=NOW,
+    )
+    mgr.check(state)
+    not_ok(f"{prop_utxo.ref}:at_risk" in mgr._fired, "at_risk should not fire when quorum is met")
+
+test("AlertManager deduplicates on repeated key",            test_alert_manager_deduplicates)
+test("alert fires for low treasury balance",                 test_alert_fires_for_low_treasury)
+test("alert does not repeat on second poll",                 test_alert_does_not_repeat)
+test("alert tracks new proposal refs",                       test_alert_tracks_new_proposals)
+test("at_risk alert fires when low participation < 48h",     test_alert_at_risk_fires_when_low_participation)
+test("at_risk alert silent when quorum already met",         test_alert_at_risk_does_not_fire_when_quorum_met)
 
 
 # ─── 10. Proposal agent validation (Feature 3) ───────────

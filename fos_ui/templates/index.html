@@ -127,6 +127,14 @@
         </div>
       </div>
       <div id="error-banner" class="error-banner hidden"></div>
+      <div class="tab-bar">
+        <button id="tab-active"   class="tab-btn active" onclick="switchTab('active')">
+          Active <span class="tab-count" id="tab-count-active">—</span>
+        </button>
+        <button id="tab-history"  class="tab-btn"        onclick="switchTab('history')">
+          History <span class="tab-count" id="tab-count-history">—</span>
+        </button>
+      </div>
       <div id="proposals-grid" class="proposals-grid">
         <div class="skeleton-card"></div>
         <div class="skeleton-card"></div>
