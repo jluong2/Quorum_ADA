@@ -116,12 +116,26 @@ python3 -c "from fos_agent import run_monitor; run_monitor(300)"
 1. Only vote Yes on `TreasuryTransfer` if `lovelace ≤ max_transfer_lovelace` and recipient is Active
 2. Never vote or execute if `registry.version != proposal.registry_version` — flag it and require a new proposal
 3. Only execute if `current_time >= execute_after` (timelock) and `yes_score >= quorum`
-4. Only trigger a treasury transfer after the execute transaction is confirmed on-chain
-5. Only apply a registry mutation (`execute_registry_action`) after the execute transaction is confirmed on-chain
-6. Write every decision to `.fos_audit.jsonl` — approved, rejected, skipped, or anomaly
-7. With `FOS_AUTONOMOUS_MODE=false` (default), describe intent and wait for human confirmation
+4. `RotateAdmin` and `TreasuryTransfer > 10 ADA` additionally require a 2/3 on-chain supermajority
+5. Only trigger a treasury transfer after the execute transaction is confirmed on-chain
+6. Only apply a registry mutation (`execute_registry_action`) after the execute transaction is confirmed on-chain
+7. Write every decision to `.fos_audit.jsonl` — approved, rejected, skipped, or anomaly
+8. With `FOS_AUTONOMOUS_MODE=false` (default), describe intent and wait for human confirmation
 
 In default mode the agent builds `UnsignedTransaction` descriptors and waits for human confirmation. In autonomous mode (`FOS_AUTONOMOUS_MODE=true`) it signs and submits transactions directly using a two-phase flow: draft → Blockfrost evaluate (real execution units) → sign → submit.
+
+The monitor loop also runs `AlertManager` on each cycle, sending Discord/Slack notifications when proposals are created, quorum is reached, deadlines are within 24 h, high-value transfers are active, or treasury balance drops below the configured threshold.
+
+**Proposal creation agent** — draft proposals from natural language:
+
+```bash
+python3 -c "
+from fos_agent.proposal_agent import run_proposal_agent
+run_proposal_agent('Propose a 5 ADA grant to member abc123 for Q2 dev work')
+"
+```
+
+The agent reads current on-chain state, validates feasibility, recommends quorum (including supermajority for high-stakes actions), shows a preview for review, and submits on confirmation.
 
 ---
 

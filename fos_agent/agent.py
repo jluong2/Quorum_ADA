@@ -81,6 +81,8 @@ Execute a proposal if ALL of the following are true:
   - current_time_ms >= execute_after  (timelock cleared)
   - weighted_yes_score >= quorum
   - registry.version == proposal.registry_version (registry unchanged)
+  - For RotateAdmin or TreasuryTransfer > 10 ADA: yes_score * 3 >= max_possible_score * 2
+    (on-chain supermajority check — the tx will fail without it)
 
 ## Decision Rules — Treasury Transfer
 
@@ -625,18 +627,47 @@ def run_fos_agent(
 
 def run_monitor(poll_interval_seconds: int = 300):
     """
-    Long-running monitor: checks FOS state on a schedule and acts on
-    pending proposals.  Runs until interrupted.
+    Long-running monitor: checks FOS state on a schedule, fires webhook alerts,
+    and acts on pending proposals.  Runs until interrupted.
 
-    Each cycle calls run_fos_agent("Check FOS state and take any pending actions").
-    With AUTONOMOUS_MODE=true the agent will submit transactions automatically.
-    With AUTONOMOUS_MODE=false it will describe what it would do and wait.
+    Each cycle:
+      1. Reads on-chain state directly (no Claude call) for alert evaluation.
+      2. Fires any new Discord/Slack alerts via AlertManager.
+      3. Calls run_fos_agent() to reason about and act on pending proposals.
+
+    With AUTONOMOUS_MODE=true the agent submits transactions automatically.
+    With AUTONOMOUS_MODE=false it describes intent and waits for confirmation.
     """
     import time
+    from .alerts import AlertManager
+    from .chain import mock_fos_state, read_fos_state
+
+    alert_mgr = AlertManager()
+    bf_client = BlockfrostClient(
+        project_id=config.BLOCKFROST_PROJECT_ID,
+        base_url=config.BLOCKFROST_URL,
+    )
+
     print(f"🏛  FOS Monitor — polling every {poll_interval_seconds}s")
     print(f"   Press Ctrl+C to stop.\n")
+
     while True:
         try:
+            # Read state for alert evaluation (fast path — no LLM)
+            if config.is_configured():
+                state = read_fos_state(
+                    bf_client,
+                    config.REGISTRY_SCRIPT_HASH,
+                    config.GOVERNANCE_SCRIPT_HASH,
+                    config.TREASURY_SCRIPT_HASH,
+                )
+            else:
+                state = mock_fos_state()
+
+            fired = alert_mgr.check(state)
+            if fired:
+                print(f"🔔  {len(fired)} alert(s) sent.")
+
             run_fos_agent("Check FOS state and take any pending actions.")
         except KeyboardInterrupt:
             print("\nMonitor stopped.")

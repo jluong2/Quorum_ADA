@@ -460,6 +460,257 @@ test("Blockfrost URL defaults to preprod",            test_blockfrost_url_defaul
 test("autonomous mode off by default",                test_autonomous_mode_default_false)
 
 
+# ─── 8. Supermajority thresholds (Feature 1) ─────────────
+
+print("\n── 8. Supermajority thresholds ──────────────────")
+
+from fos_agent.types import (
+    action_requires_supermajority, SUPERMAJORITY_HIGH_VALUE_LOVELACE,
+    UpdateRegistryMemberAction,
+)
+
+def test_rotate_admin_requires_supermajority():
+    action = RotateAdminAction(new_admin="aa" * 28)
+    ok(action_requires_supermajority(action))
+
+def test_large_transfer_requires_supermajority():
+    action = TreasuryTransferAction(
+        recipient="aa" * 28,
+        lovelace=SUPERMAJORITY_HIGH_VALUE_LOVELACE + 1,
+        memo="big",
+    )
+    ok(action_requires_supermajority(action))
+
+def test_small_transfer_no_supermajority():
+    action = TreasuryTransferAction(
+        recipient="aa" * 28,
+        lovelace=SUPERMAJORITY_HIGH_VALUE_LOVELACE,  # exactly at threshold → no supermajority
+        memo="small",
+    )
+    not_ok(action_requires_supermajority(action))
+
+def test_offchain_no_supermajority():
+    not_ok(action_requires_supermajority(OffChainDecisionAction(memo="adopt policy")))
+
+def test_update_member_no_supermajority():
+    not_ok(action_requires_supermajority(
+        UpdateRegistryMemberAction(target_key="aa" * 28, new_role=ROLE_MEMBER, new_status=STATUS_ACTIVE)
+    ))
+
+def test_supermajority_met_method_passes():
+    # Admin(3) + Treasurer(2) = 5 out of 5 max → 5*3=15 >= 5*2=10 ✓
+    reg = make_registry(
+        make_member("a", ROLE_ADMIN),
+        make_member("b", ROLE_TREASURER),
+    )
+    prop = make_proposal(
+        votes=[make_vote("a", True), make_vote("b", True)],
+        action=RotateAdminAction(new_admin="cc" * 28),
+    )
+    ok(prop.supermajority_met(reg))
+
+def test_supermajority_not_met_method_fails():
+    # Admin(3) out of Admin(3)+Treasurer(2)+Member(1)=6 max → 3*3=9 < 6*2=12 ✗
+    reg = make_registry(
+        make_member("a", ROLE_ADMIN),
+        make_member("b", ROLE_TREASURER),
+        make_member("c", ROLE_MEMBER),
+    )
+    prop = make_proposal(
+        votes=[make_vote("a", True)],
+        action=RotateAdminAction(new_admin="cc" * 28),
+    )
+    not_ok(prop.supermajority_met(reg))
+
+def test_quorum_met_includes_supermajority_check():
+    # quorum=1 (trivially met), but supermajority is not → quorum_met returns False
+    reg = make_registry(
+        make_member("a", ROLE_ADMIN),
+        make_member("b", ROLE_TREASURER),
+        make_member("c", ROLE_MEMBER),
+    )
+    # Only admin voted yes; max=6, yes=3, need 4 for 2/3 supermajority
+    prop = make_proposal(
+        votes=[make_vote("a", True)],
+        quorum=1,
+        action=RotateAdminAction(new_admin="cc" * 28),
+    )
+    not_ok(prop.quorum_met(reg))
+
+def test_quorum_met_supermajority_passes():
+    # Admin(3)+Treasurer(2)=5 out of 6 max → 5*3=15 >= 6*2=12 ✓
+    reg = make_registry(
+        make_member("a", ROLE_ADMIN),
+        make_member("b", ROLE_TREASURER),
+        make_member("c", ROLE_MEMBER),
+    )
+    prop = make_proposal(
+        votes=[make_vote("a", True), make_vote("b", True)],
+        quorum=3,
+        action=RotateAdminAction(new_admin="cc" * 28),
+    )
+    ok(prop.quorum_met(reg))
+
+test("RotateAdmin requires supermajority",                  test_rotate_admin_requires_supermajority)
+test("large TreasuryTransfer requires supermajority",       test_large_transfer_requires_supermajority)
+test("small TreasuryTransfer does not require supermajority", test_small_transfer_no_supermajority)
+test("OffChainDecision does not require supermajority",     test_offchain_no_supermajority)
+test("UpdateRegistryMember does not require supermajority", test_update_member_no_supermajority)
+test("supermajority_met() passes for 2/3 yes",              test_supermajority_met_method_passes)
+test("supermajority_met() fails for < 2/3 yes",             test_supermajority_not_met_method_fails)
+test("quorum_met enforces supermajority for RotateAdmin",   test_quorum_met_includes_supermajority_check)
+test("quorum_met passes when supermajority satisfied",      test_quorum_met_supermajority_passes)
+
+
+# ─── 9. AlertManager deduplication (Feature 2) ───────────
+
+print("\n── 9. AlertManager ───────────────────────────────")
+
+from fos_agent.alerts import AlertManager
+
+def make_alert_state(treasury_lovelace=50_000_000, proposals=None):
+    reg = make_registry(make_member("admin", ROLE_ADMIN))
+    treas_utxo = make_utxo("treas", 0, treasury_lovelace)
+    treas_datum = make_treasury()
+    treas_utxo.datum = treas_datum
+    reg_utxo = make_utxo("registry", 0)
+    reg_utxo.datum = reg
+    props = proposals or []
+    return FOSState(
+        registry=reg,
+        registry_utxo=reg_utxo,
+        proposals=props,
+        treasury_utxo=treas_utxo,
+        treasury_datum=treas_datum,
+        current_time_ms=NOW,
+    )
+
+def test_alert_manager_deduplicates():
+    # No webhooks configured — send_alert() returns False but _once() still tracks
+    mgr = AlertManager()
+    # Manually test dedup
+    ok(mgr._once("key:a"))
+    not_ok(mgr._once("key:a"))  # second call: False
+    ok(mgr._once("key:b"))
+
+def test_alert_fires_for_low_treasury():
+    mgr = AlertManager()
+    # 5 ADA treasury, threshold defaults to 10 ADA in tests we patch directly
+    import fos_agent.alerts as alerts_mod
+    old = alerts_mod.TREASURY_ALERT_ADA
+    alerts_mod.TREASURY_ALERT_ADA = 10.0
+    state = make_alert_state(treasury_lovelace=5_000_000)  # 5 ADA < 10 ADA
+    fired = mgr.check(state)
+    alerts_mod.TREASURY_ALERT_ADA = old
+    # Alert key should have been registered even if no webhook is configured
+    ok(any("treasury" in k for k in mgr._fired))
+
+def test_alert_does_not_repeat():
+    mgr = AlertManager()
+    import fos_agent.alerts as alerts_mod
+    old = alerts_mod.TREASURY_ALERT_ADA
+    alerts_mod.TREASURY_ALERT_ADA = 10.0
+    state = make_alert_state(treasury_lovelace=5_000_000)
+    mgr.check(state)
+    treasury_keys_before = sum(1 for k in mgr._fired if "treasury:low" in k)
+    mgr.check(state)
+    treasury_keys_after = sum(1 for k in mgr._fired if "treasury:low" in k)
+    alerts_mod.TREASURY_ALERT_ADA = old
+    eq(treasury_keys_before, treasury_keys_after)  # no new key added
+
+def test_alert_tracks_new_proposals():
+    mgr = AlertManager()
+    prop_utxo = make_utxo("proposal1")
+    prop = make_proposal(vote_deadline=NOW + 10 * 86_400_000)
+    state = make_alert_state(proposals=[(prop_utxo, prop)])
+    mgr.check(state)
+    ok(f"{prop_utxo.ref}:seen" in mgr._fired)
+
+test("AlertManager deduplicates on repeated key",    test_alert_manager_deduplicates)
+test("alert fires for low treasury balance",         test_alert_fires_for_low_treasury)
+test("alert does not repeat on second poll",         test_alert_does_not_repeat)
+test("alert tracks new proposal refs",               test_alert_tracks_new_proposals)
+
+
+# ─── 10. Proposal agent validation (Feature 3) ───────────
+
+print("\n── 10. Proposal agent ────────────────────────────")
+
+from fos_agent.proposal_agent import _ProposalAgent
+from fos_agent.chain import mock_fos_state, BlockfrostClient
+
+def make_proposal_agent():
+    bf = BlockfrostClient(project_id="", base_url="https://cardano-preprod.blockfrost.io/api/v0")
+    agent = _ProposalAgent(bf)
+    agent._read_fos_state()  # populates self._state from mock
+    return agent
+
+def test_proposal_agent_read_state():
+    agent = make_proposal_agent()
+    ok(agent._state is not None)
+
+def test_proposal_agent_rejects_over_cap():
+    agent = make_proposal_agent()
+    result = json.loads(agent._draft_proposal(
+        action_type="TreasuryTransfer",
+        description="Big grant",
+        vote_deadline_days=7,
+        execute_after_days=8,
+        quorum=4,
+        recipient_key_hash="c3d4e5f6" * 7,
+        amount_ada=100.0,   # way over the 5 ADA mock cap
+        memo="too much",
+    ))
+    not_ok(result["success"])
+    ok("cap" in result["error"].lower() or "exceeds" in result["error"].lower())
+
+def test_proposal_agent_rejects_low_supermajority_quorum():
+    agent = make_proposal_agent()
+    # RotateAdmin needs supermajority; quorum=1 should be rejected
+    result = json.loads(agent._draft_proposal(
+        action_type="RotateAdmin",
+        description="Rotate admin",
+        vote_deadline_days=7,
+        execute_after_days=8,
+        quorum=1,
+        new_admin_key_hash="a1b2c3d4" * 7,
+    ))
+    not_ok(result["success"])
+    ok("supermajority" in result["error"].lower())
+
+def test_proposal_agent_drafts_offchain_decision():
+    agent = make_proposal_agent()
+    result = json.loads(agent._draft_proposal(
+        action_type="OffChainDecision",
+        description="Adopt MIT licence for all repos",
+        vote_deadline_days=7,
+        execute_after_days=8,
+        quorum=3,
+        memo="Adopt MIT licence",
+    ))
+    ok(result["success"])
+    ok("preview" in result)
+    eq(result["preview"]["action_type"], "OffChainDecision")
+
+def test_proposal_agent_draft_stored():
+    agent = make_proposal_agent()
+    agent._draft_proposal(
+        action_type="OffChainDecision",
+        description="Adopt MIT licence",
+        vote_deadline_days=7,
+        execute_after_days=8,
+        quorum=3,
+        memo="MIT",
+    )
+    ok(agent._draft is not None)
+
+test("proposal agent reads mock state",                           test_proposal_agent_read_state)
+test("proposal agent rejects transfer over cap",                  test_proposal_agent_rejects_over_cap)
+test("proposal agent rejects RotateAdmin without supermajority",  test_proposal_agent_rejects_low_supermajority_quorum)
+test("proposal agent drafts OffChainDecision successfully",       test_proposal_agent_drafts_offchain_decision)
+test("proposal agent stores draft for submission",                test_proposal_agent_draft_stored)
+
+
 # ─── Results ──────────────────────────────────────────────
 
 total = passed + failed

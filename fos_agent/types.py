@@ -210,6 +210,18 @@ ProposalAction = Union[
     OffChainDecisionAction,
 ]
 
+# Mirrors governance.ak: high_value_lovelace constant
+SUPERMAJORITY_HIGH_VALUE_LOVELACE = 10_000_000
+
+
+def action_requires_supermajority(action: ProposalAction) -> bool:
+    """True when the on-chain Execute arm will enforce a 2/3 supermajority."""
+    if isinstance(action, RotateAdminAction):
+        return True
+    if isinstance(action, TreasuryTransferAction):
+        return action.lovelace > SUPERMAJORITY_HIGH_VALUE_LOVELACE
+    return False
+
 
 def parse_proposal_action(val) -> ProposalAction:
     alt = _alt(val)
@@ -314,8 +326,19 @@ class GovernanceDatum:
                     score += member.vote_weight
         return score
 
+    def supermajority_met(self, registry: RegistryDatum) -> bool:
+        """True when yes_score * 3 >= max_possible_score * 2 (mirrors supermajority_met in governance.ak)."""
+        yes = self.weighted_yes_score(registry)
+        max_score = registry.max_possible_yes_score()
+        return yes * 3 >= max_score * 2
+
     def quorum_met(self, registry: RegistryDatum) -> bool:
-        return self.weighted_yes_score(registry) >= self.quorum
+        yes = self.weighted_yes_score(registry)
+        if yes < self.quorum:
+            return False
+        if action_requires_supermajority(self.action):
+            return self.supermajority_met(registry)
+        return True
 
     def already_voted(self, key_hash: str) -> bool:
         return any(v.voter == key_hash for v in self.votes)

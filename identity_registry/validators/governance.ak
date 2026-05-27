@@ -5,8 +5,9 @@ use aiken/transaction.{
   InlineDatum, OutputReference, ScriptContext, Spend, Transaction, find_input,
 }
 use fos_types.{
-  Active, Admin, Executed, Expired, GovernanceDatum, Member, Observer, RegistryDatum,
-  RegistryMember, Role, Suspended, Treasurer, VoteRecord, Voting,
+  Active, Admin, Executed, Expired, GovernanceDatum, Member, Observer, ProposalAction,
+  RegistryDatum, RegistryMember, Role, RotateAdmin, Suspended, Treasurer, TreasuryTransfer,
+  VoteRecord, Voting,
 }
 
 // ─── Redeemer ─────────────────────────────────────────────
@@ -85,6 +86,42 @@ fn load_registry(
   registry
 }
 
+// ─── Supermajority ───────────────────────────────────────
+//
+// High-stakes actions require a 2/3 supermajority of the maximum possible
+// weighted yes score, regardless of the proposal's own quorum field.
+//
+// Threshold: TreasuryTransfer > 10 ADA, or any RotateAdmin.
+
+const high_value_lovelace: Int = 10_000_000
+
+fn action_requires_supermajority(action: ProposalAction) -> Bool {
+  when action is {
+    RotateAdmin { .. } -> True
+    TreasuryTransfer { lovelace, .. } -> lovelace > high_value_lovelace
+    _ -> False
+  }
+}
+
+fn max_possible_yes_score(members: List<RegistryMember>) -> Int {
+  list.foldl(
+    members,
+    0,
+    fn(m, acc) {
+      if m.status == Active {
+        acc + vote_weight(m.role)
+      } else {
+        acc
+      }
+    },
+  )
+}
+
+// Two-thirds supermajority: yes_score * 3 >= max_score * 2.
+fn supermajority_met(yes_score: Int, max_score: Int) -> Bool {
+  yes_score * 3 >= max_score * 2
+}
+
 fn tx_lower_bound(ctx: ScriptContext) -> Int {
   expect Finite(lower) =
     ctx.transaction.validity_range.lower_bound.bound_type
@@ -156,6 +193,14 @@ validator {
           load_registry(ctx, datum.registry_ref, datum.registry_version)
         let yes_score = count_weighted_yes(datum.votes, registry.members)
         expect yes_score >= datum.quorum
+
+        // High-stakes actions (RotateAdmin, large transfers) require 2/3 supermajority
+        // regardless of the proposal's own quorum field.
+        expect
+          !action_requires_supermajority(datum.action) || supermajority_met(
+            yes_score,
+            max_possible_yes_score(registry.members),
+          )
 
         let new_datum = continuing_datum(ctx)
 
@@ -359,4 +404,68 @@ test all_nay_votes_score_zero() {
       VoteRecord { voter: #"bb", approve: False },
     ]
   count_weighted_yes(votes, members) == 0
+}
+
+// ─── Supermajority tests ─────────────────────────────────
+
+test rotate_admin_requires_supermajority() {
+  action_requires_supermajority(RotateAdmin { new_admin: #"aa" })
+}
+
+test large_treasury_transfer_requires_supermajority() {
+  // 11 ADA > 10 ADA threshold
+  action_requires_supermajority(
+    TreasuryTransfer { recipient: #"aa", lovelace: 11_000_000, memo: #"" },
+  )
+}
+
+test small_treasury_transfer_does_not_require_supermajority() {
+  // 5 ADA ≤ 10 ADA threshold
+  !action_requires_supermajority(
+    TreasuryTransfer { recipient: #"aa", lovelace: 5_000_000, memo: #"" },
+  )
+}
+
+test offchain_decision_does_not_require_supermajority() {
+  !action_requires_supermajority(fos_types.OffChainDecision { memo: #"adopt policy" })
+}
+
+test max_possible_yes_score_sums_active_members() {
+  // Admin(3) + Treasurer(2) + suspended_member(0) = 5
+  let members =
+    [
+      RegistryMember { key_hash: #"aa", role: Admin, joined_at: 100, status: Active },
+      RegistryMember {
+        key_hash: #"bb",
+        role: Treasurer,
+        joined_at: 200,
+        status: Active,
+      },
+      RegistryMember {
+        key_hash: #"cc",
+        role: Member,
+        joined_at: 300,
+        status: Suspended,
+      },
+    ]
+  max_possible_yes_score(members) == 5
+}
+
+test supermajority_met_two_thirds() {
+  // 4 out of 6 max = 66.7% ≥ 2/3 → passes (4*3=12 >= 6*2=12)
+  supermajority_met(4, 6)
+}
+
+test supermajority_not_met_below_two_thirds() {
+  // 3 out of 6 max = 50% < 2/3 → fails (3*3=9 < 6*2=12)
+  !supermajority_met(3, 6)
+}
+
+test supermajority_met_unanimous() {
+  supermajority_met(6, 6)
+}
+
+test supermajority_at_exact_threshold() {
+  // 2 out of 3 max: 2*3=6 >= 3*2=6 → exactly at boundary, passes
+  supermajority_met(2, 3)
 }

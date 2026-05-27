@@ -57,6 +57,9 @@ export FOS_AGENT_SIGNING_KEY="..."       # 32-byte Ed25519 hex private key
 export FOS_COLLATERAL_REF="..."          # "txhash#index" — UTxO with 5+ ADA for Plutus collateral
 export FOS_MAX_AUTO_TRANSFER_LOVELACE="5000000"   # per-proposal safety cap
 export FOS_AUTONOMOUS_MODE="false"       # set true to sign + submit without confirmation
+export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."  # optional alerts
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."    # optional alerts
+export FOS_TREASURY_ALERT_ADA="10"      # alert when treasury drops below this (ADA)
 ```
 
 CIP-171 on-chain contract verification:
@@ -158,6 +161,8 @@ All cross-validator types live here. The most important:
 
 **`governance_script_hash` is immutable in `RegistryDatum`.** All registry mutation paths assert `new_datum.governance_script_hash == datum.governance_script_hash`. Once set at deployment, the governance link cannot be rewired without redeploying.
 
+**High-stakes actions require a 2/3 supermajority.** `RotateAdmin` and `TreasuryTransfer > 10 ADA` must satisfy `yes_score * 3 >= max_possible_score * 2` in addition to the proposal's `quorum` field. Enforced by `action_requires_supermajority()` / `supermajority_met()` in `governance.ak` and mirrored by the same functions in `fos_agent/types.py`.
+
 **Treasury conserves ADA.** The continuing treasury output must hold at least `treasury_in_lovelace - lovelace` after a transfer. Without this check, the tx submitter could drain the remaining balance to their change address.
 
 **Governance datum fields are fully locked in Execute and Expire.** Both status-transition paths assert all nine immutable fields (`proposer`, `description`, `action`, `votes`, `quorum`, `execute_after`, `vote_deadline`, `registry_ref`, `registry_version`) are unchanged on the continuing output. Only `status` may change.
@@ -187,7 +192,9 @@ All cross-validator types live here. The most important:
 - **`fos_agent/types.py`** — Python mirrors of every type in `lib/fos_types.ak`, with `from_cbor_hex()` classmethods for deserializing Blockfrost inline datums. CBOR encoding: records → `Constr(0, fields)`, enum variant N → `Constr(N, [])`, `Bool True` → `Constr(1, [])`. Requires `cbor2`.
 - **`fos_agent/chain.py`** — `BlockfrostClient` wraps the Blockfrost REST API and returns typed Python objects. `read_fos_state()` snapshots all three validators in one call and returns a `FOSState`. `FOSState` has derived properties: `executable_proposals`, `expirable_proposals`, `executed_proposals`, `unreachable_quorum_proposals`, `executed_awaiting_registry` — computed from quorum, timelock, registry score, action type, and current time. `unreachable_quorum_proposals` flags active proposals where the max possible yes score is already below the quorum threshold so the agent can expire them immediately. `executed_awaiting_registry` flags Executed proposals with `RotateAdmin` or `UpdateRegistryMember` actions that still need `execute_registry_action` called.
 - **`fos_agent/transactions.py`** — One builder per FOS action. Each returns an `UnsignedTransaction` (inputs, reference\_inputs, outputs, redeemers, validity range, required signers). The builders assert security conditions before constructing — e.g. `build_execute_transfer_tx` raises if `status != Executed`, action is not `TreasuryTransfer`, or `lovelace > max_transfer_lovelace`. `build_execute_registry_action_tx` uses redeemer constructor 4 (`GovernanceApproval`) and applies the mutation in Python before serialising the new datum.
-- **`fos_agent/agent.py`** — `FOSAgent` dispatches tool calls to `chain.py` / `transactions.py`. `run_fos_agent(instruction)` is the one-shot entry point; `run_monitor(interval)` wraps it in a polling loop. Every decision is written to `.fos_audit.jsonl` via the `write_audit_log` tool. When `AUTONOMOUS_MODE=true`, `_sign_and_submit()` is called after each transaction builder — it fetches the agent's wallet UTxOs, loads compiled scripts from `plutus.json`, calls `signing.build_signed_transaction()`, and submits via Blockfrost.
+- **`fos_agent/agent.py`** — `FOSAgent` dispatches tool calls to `chain.py` / `transactions.py`. `run_fos_agent(instruction)` is the one-shot entry point; `run_monitor(interval)` wraps it in a polling loop, calling `AlertManager.check()` before each agent turn. Every decision is written to `.fos_audit.jsonl` via the `write_audit_log` tool. When `AUTONOMOUS_MODE=true`, `_sign_and_submit()` is called after each transaction builder — it fetches the agent's wallet UTxOs, loads compiled scripts from `plutus.json`, calls `signing.build_signed_transaction()`, and submits via Blockfrost.
+- **`fos_agent/alerts.py`** — `AlertManager` fires Discord/Slack webhook notifications for: new proposals, quorum reached, deadline within 24 h, high-value transfer proposals, treasury below threshold. Deduplicates via an in-memory `_fired` set so each alert fires at most once per process lifetime. Configure: `DISCORD_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `FOS_TREASURY_ALERT_ADA`.
+- **`fos_agent/proposal_agent.py`** — `run_proposal_agent(instruction)` drafts and submits governance proposals from natural language. Tools: `read_fos_state`, `draft_proposal` (validates feasibility, enforces supermajority quorum for high-stakes actions, returns preview), `submit_proposal` (only called after user confirms). Signs and submits autonomously when `AUTONOMOUS_MODE=true`.
 
 ### The agent loop — treasury payment
 
@@ -230,15 +237,16 @@ execute_registry_action → builds UnsignedTransaction with:
     ↳ AUTONOMOUS_MODE: sign → evaluate → sign final → submit
 ```
 
-### Seven agent-level safety rules (system prompt enforced)
+### Eight agent-level safety rules (system prompt enforced)
 
 1. Vote yes on `TreasuryTransfer` only if `lovelace ≤ max_transfer_lovelace` and recipient is Active in registry.
 2. Never vote or execute if `registry.version != proposal.registry_version` — flag it and require a new proposal.
 3. Only call `execute_proposal` if `current_time >= execute_after` (timelock) and `yes_score >= quorum`.
-4. Only call `execute_treasury_transfer` after `execute_proposal` is confirmed on-chain.
-5. Only call `execute_registry_action` after `execute_proposal` is confirmed on-chain; action must be `RotateAdmin` or `UpdateRegistryMember`.
-6. `write_audit_log` on every decision — approved, rejected, skipped, or anomaly.
-7. With `FOS_AUTONOMOUS_MODE=false` (default), describe intent and wait for human confirmation before building any transaction.
+4. For `RotateAdmin` or `TreasuryTransfer > 10 ADA`, additionally verify `yes_score * 3 >= max_possible_score * 2` before calling `execute_proposal` (on-chain supermajority check).
+5. Only call `execute_treasury_transfer` after `execute_proposal` is confirmed on-chain.
+6. Only call `execute_registry_action` after `execute_proposal` is confirmed on-chain; action must be `RotateAdmin` or `UpdateRegistryMember`.
+7. `write_audit_log` on every decision — approved, rejected, skipped, or anomaly.
+8. With `FOS_AUTONOMOUS_MODE=false` (default), describe intent and wait for human confirmation before building any transaction.
 
 ### Signing layer (`fos_agent/signing.py` + `fos_agent/datums.py`)
 
