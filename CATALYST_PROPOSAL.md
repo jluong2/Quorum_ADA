@@ -133,7 +133,7 @@ All funded work will be delivered as open-source contributions under the MIT lic
 
 ## Team
 
-**Johnny Luong** — sole developer and project lead.
+**Tuan Luong** — sole developer and project lead.
 
 Built the complete Quorum stack independently: three Aiken smart contracts, a Claude AI operator agent, a PyCardano-based transaction builder and signing layer, and a Flask web dashboard with CIP-30 wallet integration. The project represents significant original technical work across smart contract development, AI systems integration, and Cardano transaction construction.
 
