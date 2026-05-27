@@ -40,6 +40,8 @@ The source of truth for who belongs to the organisation. Every member is recorde
 
 The registry stores a monotonically increasing **version number**. Every time a member is added, suspended, or removed, the version increments. This version is the key to keeping governance safe — see Section 4.
 
+The registry also stores the **governance script hash** — the compiled hash of the `governance.ak` validator. This field is immutable after deployment and is used by the `GovernanceApproval` redeemer to authenticate governance reference inputs without requiring the admin key.
+
 #### Layer 2 — Governance (`governance.ak`)
 
 Handles proposals and voting. Each proposal lives in its own UTxO and records:
@@ -54,11 +56,11 @@ Handles proposals and voting. Each proposal lives in its own UTxO and records:
 
 **Actions that can be proposed:**
 
-| Action | Effect |
+| Action | Execution path |
 |---|---|
-| `TreasuryTransfer` | Release a specific ADA amount to a specific recipient |
-| `RotateAdmin` | Replace the registry admin key |
-| `UpdateRegistryMember` | Change a member's role or status |
+| `TreasuryTransfer` | Release a specific ADA amount to a specific recipient (treasury validator) |
+| `RotateAdmin` | Replace the registry admin key — applied via `GovernanceApproval` on the registry validator, no admin key required |
+| `UpdateRegistryMember` | Change a member's role or status — applied via `GovernanceApproval` on the registry validator, no admin key required |
 | `OffChainDecision` | Record a governance decision that has no on-chain execution (e.g. elect an officer) |
 
 #### Layer 3 — Treasury (`treasury.ak`)
@@ -102,6 +104,7 @@ Three modules handle the full transaction lifecycle:
   | `build_execute_proposal_tx` | Flip status `Voting → Executed` once quorum + timelock clear |
   | `build_expire_proposal_tx` | Flip status `Voting → Expired` after deadline without quorum |
   | `build_execute_transfer_tx` | Spend treasury UTxO and pay the approved recipient |
+  | `build_execute_registry_action_tx` | Apply a `RotateAdmin` or `UpdateRegistryMember` mutation to the registry using the `GovernanceApproval` redeemer (constructor index 4) — no admin key needed |
 - **`datums.py`** — serialises Python datum objects back to on-chain CBOR hex (the inverse of parsing). Used to construct the inline datum on the continuing output for every validator spend.
 - **`signing.py`** — integrates PyCardano to derive addresses from script hashes and verification key hashes, estimate fees, and sign a completed transaction body with an Ed25519 private key.
 
@@ -220,6 +223,13 @@ PORT=5050 python3 fos_ui/app.py
       Remaining ADA returns to the treasury (continuing output)
       The executed governance UTxO is included as a reference input
 
+5a. Registry mutation (if action = RotateAdmin or UpdateRegistryMember)
+   └─ Agent calls execute_registry_action  →  registry UTxO is spent
+      GovernanceApproval redeemer (no admin key needed)
+      Registry validator verifies governance reference input by script hash,
+      checks status == Executed and registry_version == current version
+      New registry datum written with mutation applied and version incremented
+
 6. Expiry (if deadline passed without quorum)
    └─ Operator calls /api/expire  →  flips status Voting → Expired
 ```
@@ -285,6 +295,9 @@ The treasury datum stores the `governance_script_hash` — the hash of the compi
 | Vote weight reflects current membership | `count_weighted_yes` checks `status == Active` at execution time |
 | Stale proposals rejected after membership changes | Registry version pinning in `governance.ak` |
 | Treasury only accepts verified governance UTxO | Script hash check in `treasury.ak` |
+| Registry mutations via governance require verified governance UTxO | `governance_script_hash` check in `identity_registry.ak` (`GovernanceApproval` path) |
+| GovernanceApproval cannot be replayed | `registry_version == datum.version` check in `identity_registry.ak` |
+| `governance_script_hash` cannot be changed after deployment | Immutability assertion in all `identity_registry.ak` redeemer paths |
 | Per-proposal ADA cap | `max_transfer_lovelace` in `TreasuryDatum` |
 | State cannot disappear from chain | Continuing output requirement in all three validators |
 | Agent decisions are auditable | Every action logged to `.fos_audit.jsonl` |
@@ -335,7 +348,8 @@ fos_ui/
   static/app.js             ← CIP-30 wallet + proposal card rendering
 
 scripts/
-  deploy.py                 ← Preprod deployment script
+  deploy.py                 ← Preprod deployment (registry + treasury UTxOs)
+  verify.py                 ← CIP-171 on-chain bytecode verification (metadata label 1984)
 
 agent.py                    ← Builder agent (contract generation)
 rag.py                      ← ChromaDB RAG layer

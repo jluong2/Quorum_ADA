@@ -77,16 +77,20 @@ Three Aiken validators, each holding one UTxO of on-chain state:
 
 **Proposal actions:**
 
-| Action | Effect |
+| Action | Execution path |
 |---|---|
-| `TreasuryTransfer` | Release ADA to an approved recipient |
-| `RotateAdmin` | Replace the registry admin key |
-| `UpdateRegistryMember` | Change a member's role or status |
+| `TreasuryTransfer` | Release ADA to an approved recipient (treasury validator) |
+| `RotateAdmin` | Replace the registry admin key (registry validator — no admin key needed) |
+| `UpdateRegistryMember` | Change a member's role or status (registry validator — no admin key needed) |
 | `OffChainDecision` | Record a governance decision with no on-chain execution |
+
+`RotateAdmin` and `UpdateRegistryMember` proposals use the `GovernanceApproval` redeemer on the registry validator. The registry verifies the governance reference input by script hash, confirms status is `Executed`, and checks the proposal's pinned `registry_version` matches the current version (replay protection).
 
 **Key safety properties:**
 
 - Registry mutations increment a version number. Governance proposals pin this version at creation — a membership change after a proposal is created invalidates that proposal, preventing quorum manipulation attacks.
+- `RegistryDatum.governance_script_hash` is immutable after deployment. The registry validator rejects any datum that attempts to change it, preventing governance from being rewired post-deploy.
+- GovernanceApproval is replay-proof. A governance proposal can only mutate the registry version it was voted on; once the version increments, the same proposal reference fails the version check.
 - Treasury authenticates governance by script hash. A fake "Executed" UTxO at an arbitrary address cannot drain funds.
 - Suspended members lose voting weight retroactively. `count_weighted_yes` checks `status == Active` at execution time, not at vote-cast time.
 - Every validator requires a continuing output — state can never disappear from the chain.
@@ -105,14 +109,15 @@ python3 -c "from fos_agent import run_fos_agent; run_fos_agent('Check state and 
 python3 -c "from fos_agent import run_monitor; run_monitor(300)"
 ```
 
-**Six enforced safety rules (baked into the system prompt):**
+**Seven enforced safety rules (baked into the system prompt):**
 
 1. Only vote Yes on `TreasuryTransfer` if `lovelace ≤ max_transfer_lovelace` and recipient is Active
 2. Never vote or execute if `registry.version != proposal.registry_version` — flag it and require a new proposal
 3. Only execute if `current_time >= execute_after` (timelock) and `yes_score >= quorum`
 4. Only trigger a treasury transfer after the execute transaction is confirmed on-chain
-5. Write every decision to `.fos_audit.jsonl` — approved, rejected, skipped, or anomaly
-6. With `FOS_AUTONOMOUS_MODE=false` (default), describe intent and wait for human confirmation
+5. Only apply a registry mutation (`execute_registry_action`) after the execute transaction is confirmed on-chain
+6. Write every decision to `.fos_audit.jsonl` — approved, rejected, skipped, or anomaly
+7. With `FOS_AUTONOMOUS_MODE=false` (default), describe intent and wait for human confirmation
 
 In default mode the agent builds `UnsignedTransaction` descriptors and waits for human confirmation. In autonomous mode (`FOS_AUTONOMOUS_MODE=true`) it signs and submits transactions directly using a two-phase flow: draft → Blockfrost evaluate (real execution units) → sign → submit.
 
