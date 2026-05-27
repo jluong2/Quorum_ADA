@@ -20,8 +20,10 @@ const WALLETS = [
 document.addEventListener('DOMContentLoaded', () => {
   loadState();
   loadAudit();
+  loadDrep();
   setInterval(loadState,  30_000);
   setInterval(loadAudit,  20_000);
+  setInterval(loadDrep,  120_000);
   setInterval(updateClock, 1_000);
   updateClock();
 });
@@ -158,6 +160,12 @@ function proposalCard(p, d, extraClass = '') {
   // ── Action detail rows ──────────────────────────────────
   let actionRows = '';
   if (p.action_type === 'TreasuryTransferAction') {
+    const tokenRows = (ad.tokens || []).map(t =>
+      `<div class="detail-row">
+        <span class="detail-key">Token</span>
+        <span class="detail-val">${escHtml(String(t.quantity))} ${escHtml(t.asset_name)} <span class="mono muted">(${escHtml(t.policy_id.slice(0,8))}…)</span></span>
+      </div>`
+    ).join('');
     actionRows = `
       <div class="detail-row">
         <span class="detail-key">Recipient</span>
@@ -167,6 +175,7 @@ function proposalCard(p, d, extraClass = '') {
         <span class="detail-key">Transfer Amount</span>
         <span class="detail-val amount">${escHtml(ad.amount_ada||'—')} ₳</span>
       </div>
+      ${tokenRows}
       <div class="detail-row">
         <span class="detail-key">Memo</span>
         <span class="detail-val">${escHtml(ad.memo||'—')}</span>
@@ -252,7 +261,10 @@ function proposalCard(p, d, extraClass = '') {
 
       <!-- Action -->
       <div class="prop-section">
-        <div class="prop-section-label">Action</div>
+        <div class="prop-section-label-row">
+          <span class="prop-section-label">Action</span>
+          ${p.rationale_url ? `<a class="ipfs-link" href="${escHtml(p.rationale_url.replace('ipfs://', 'https://ipfs.io/ipfs/'))}" target="_blank" rel="noopener">📄 Rationale</a>` : ''}
+        </div>
         <span class="action-tag">${icon} ${escHtml(ad.type||p.action_type.replace('Action',''))}</span>
         ${actionRows ? `<div class="detail-grid">${actionRows}</div>` : ''}
       </div>
@@ -697,6 +709,11 @@ function renderActionFields() {
         <label class="form-label" for="p-memo">Memo</label>
         <input type="text" id="p-memo" class="form-input"
                placeholder="Purpose of this payment…" maxlength="100">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Native Tokens <span class="form-hint">optional — leave empty for ADA-only</span></label>
+        <div id="token-list"></div>
+        <button type="button" class="btn btn-ghost small" onclick="addTokenRow()">+ Add Token</button>
       </div>`;
 
   } else if (_selectedActionType === 'OffChainDecision') {
@@ -757,6 +774,34 @@ function renderActionFields() {
   }
 }
 
+function addTokenRow() {
+  const list = document.getElementById('token-list');
+  if (!list) return;
+  const row = document.createElement('div');
+  row.className = 'token-row form-row';
+  row.innerHTML = `
+    <div class="form-group" style="flex:2">
+      <input type="text" class="form-input token-policy" placeholder="Policy ID (56 hex chars)…" maxlength="56">
+    </div>
+    <div class="form-group" style="flex:1">
+      <input type="text" class="form-input token-asset" placeholder="Asset name (hex or UTF-8)">
+    </div>
+    <div class="form-group" style="flex:1">
+      <input type="number" class="form-input token-qty" placeholder="Quantity" min="1" step="1">
+    </div>
+    <button type="button" class="btn btn-ghost small" onclick="this.closest('.token-row').remove()" style="align-self:flex-end;margin-bottom:4px">✕</button>
+  `;
+  list.appendChild(row);
+}
+
+function collectTokens() {
+  return Array.from(document.querySelectorAll('.token-row')).map(row => ({
+    policy_id:  row.querySelector('.token-policy')?.value.trim() || '',
+    asset_name: row.querySelector('.token-asset')?.value.trim() || '',
+    quantity:   parseInt(row.querySelector('.token-qty')?.value || '0'),
+  })).filter(t => t.policy_id && t.quantity > 0);
+}
+
 function updateQuorumHint() {
   const hint = document.getElementById('p-quorum-hint');
   const max  = _state?.registry?.max_yes_score;
@@ -773,6 +818,7 @@ async function submitProposal() {
   const timelockHours = parseFloat(document.getElementById('p-timelock-hours')?.value || 0);
   const quorum = parseInt(document.getElementById('p-quorum')?.value || 0);
   const depositAda = parseFloat(document.getElementById('p-deposit-ada')?.value || 2);
+  const rationaleUrl = document.getElementById('p-rationale-url')?.value.trim() || '';
 
   if (!description) return showProposalError('Description is required.');
   if (deadlineHours < 1) return showProposalError('Vote deadline must be at least 1 hour.');
@@ -791,15 +837,18 @@ async function submitProposal() {
     execute_after_ms,
     quorum,
     deposit_ada: depositAda,
+    rationale_url: rationaleUrl,
   };
 
   if (_selectedActionType === 'TreasuryTransfer') {
     payload.recipient  = document.getElementById('p-recipient')?.value.trim();
     payload.amount_ada = document.getElementById('p-amount-ada')?.value;
     payload.memo       = document.getElementById('p-memo')?.value.trim();
+    payload.tokens     = collectTokens();
     if (!payload.recipient) return showProposalError('Recipient key hash is required.');
-    if (!payload.amount_ada || parseFloat(payload.amount_ada) <= 0)
-      return showProposalError('Transfer amount must be greater than 0.');
+    const amt = parseFloat(payload.amount_ada || '0');
+    if (amt <= 0 && payload.tokens.length === 0)
+      return showProposalError('Specify an ADA amount or at least one native token.');
   } else if (_selectedActionType === 'OffChainDecision') {
     payload.memo = document.getElementById('p-memo')?.value.trim();
     if (!payload.memo) return showProposalError('Decision memo is required.');
@@ -867,6 +916,24 @@ function renderActivity(entries) {
       <div class="activity-details">${escHtml(e.details.slice(0, 80))}</div>
     </div>
   `).join('');
+}
+
+// ── DRep status ────────────────────────────────────────────
+async function loadDrep() {
+  try {
+    const r = await fetch('/api/drep');
+    const j = await r.json();
+    if (!j.ok) return;
+    const d = j.drep;
+    const dot = document.getElementById('drep-status-dot');
+    if (dot) {
+      dot.className = 'dot ' + (d.registered && d.is_active ? 'dot-green pulse' : d.registered ? 'dot-amber' : 'dot-red');
+    }
+    setText('drep-id', d.drep_id || '—');
+    setText('drep-registered', d.registered ? (d.is_active ? 'Yes (active)' : 'Yes (inactive)') : 'Not registered');
+    setText('drep-voting-power', d.registered ? (d.voting_power_ada + ' ₳') : '—');
+    setText('drep-delegators', d.registered ? String(d.delegator_count) : '—');
+  } catch (_) {}
 }
 
 // ── Toast notification ─────────────────────────────────────

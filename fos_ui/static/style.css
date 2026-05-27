@@ -319,6 +319,10 @@ body {
 .tm-val.mono { font-family: var(--mono); font-size: 10px; color: var(--text-2); }
 .tiny { font-size: 10px !important; }
 
+/* DRep card */
+.drep-id-label { font-size: 10px; color: var(--text-3); margin-bottom: 2px; text-transform: uppercase; letter-spacing: .04em; }
+.drep-id { font-family: var(--mono); font-size: 10px; color: var(--text-2); word-break: break-all; margin-bottom: 4px; }
+
 /* Registry members */
 .member-row {
   display: flex;
@@ -373,6 +377,7 @@ body {
 .dot-green { background: var(--green); }
 .dot-amber { background: var(--amber); }
 .dot-blue  { background: var(--blue); }
+.dot-red   { background: #c85050; }
 .pulse { animation: pulse 2s ease-in-out infinite; }
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
@@ -603,6 +608,15 @@ body {
 .deposit-badge.locked   { background: rgba(255,200,50,.12); color: #c8952a; }
 .deposit-badge.refunded { background: rgba(80,200,120,.12); color: var(--green); }
 .deposit-badge.forfeited{ background: rgba(200,80,80,.12);  color: #c85050; }
+
+.ipfs-link {
+  font-size: 11px;
+  color: var(--blue);
+  text-decoration: none;
+  opacity: .75;
+  transition: opacity .15s;
+}
+.ipfs-link:hover { opacity: 1; text-decoration: underline; }
 
 /* Enhanced vote chips */
 .votes-wrap-v2 { display: flex; flex-wrap: wrap; gap: 7px; }

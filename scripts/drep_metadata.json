@@ -1,0 +1,40 @@
+{
+  "@context": {
+    "@language": "en-us",
+    "CIP100": "https://github.com/cardano-foundation/CIPs/blob/master/CIP-0100/README.md#",
+    "CIP119": "https://github.com/cardano-foundation/CIPs/blob/master/CIP-0119/README.md#",
+    "hashAlgorithm": "CIP100:hashAlgorithm",
+    "body": {
+      "@id": "CIP119:body",
+      "@context": {
+        "givenName":      "CIP119:givenName",
+        "motivations":    "CIP119:motivations",
+        "objectives":     "CIP119:objectives",
+        "qualifications": "CIP119:qualifications",
+        "references": {
+          "@id": "CIP119:references",
+          "@container": "@set"
+        }
+      }
+    }
+  },
+  "hashAlgorithm": "blake2b-256",
+  "body": {
+    "givenName": "Quorum FOS Governance Agent",
+    "motivations": "Autonomous on-chain governance operator for Quorum protocol DAOs. Evaluates proposals according to eight cryptographically-enforced safety rules: transfer caps, registry version pinning, timelock enforcement, supermajority for high-stakes actions, and full audit logging of every decision.",
+    "objectives": "Vote yes on proposals that satisfy all safety rules; vote no or abstain on proposals that violate them. Execute approved treasury transfers and registry mutations only after quorum and timelock are confirmed on-chain.",
+    "qualifications": "Powered by Claude (Anthropic). Reads on-chain state via Blockfrost REST API. Aiken smart contracts enforce all invariants independently of the agent. Open-source: github.com/jluong2/Quorum_ADA.",
+    "references": [
+      {
+        "@type": "Other",
+        "label": "Quorum Protocol GitHub",
+        "uri": "https://github.com/jluong2/Quorum_ADA"
+      },
+      {
+        "@type": "Other",
+        "label": "CIP-95 DRep Specification",
+        "uri": "https://cips.cardano.org/cip/CIP-0095"
+      }
+    ]
+  }
+}

@@ -61,21 +61,22 @@ Handles proposals and voting. Each proposal lives in its own UTxO and records:
 
 | Action | Execution path |
 |---|---|
-| `TreasuryTransfer` | Release a specific ADA amount to a specific recipient (treasury validator) |
+| `TreasuryTransfer` | Release a specific ADA amount **and/or native tokens** to a specific recipient (treasury validator); the `tokens` field is a `List<NativeToken>` — empty for ADA-only transfers |
 | `RotateAdmin` | Replace the registry admin key — applied via `GovernanceApproval` on the registry validator, no admin key required |
 | `UpdateRegistryMember` | Change a member's role or status — applied via `GovernanceApproval` on the registry validator, no admin key required |
 | `OffChainDecision` | Record a governance decision that has no on-chain execution (e.g. elect an officer) |
 
 #### Layer 3 — Treasury (`treasury.ak`)
 
-Holds the organisation's ADA. The treasury UTxO can only be spent when:
+Holds the organisation's ADA and native tokens. The treasury UTxO can only be spent when:
 
 1. A governance proposal with a `TreasuryTransfer` action has status `Executed`
 2. The governance UTxO is included as a **reference input** (read-only, not consumed)
-3. The recipient and amount match exactly what the proposal specifies
-4. The transfer amount does not exceed the per-proposal cap in `TreasuryDatum`
+3. The recipient receives at least the approved ADA amount and all approved native tokens
+4. The ADA transfer amount does not exceed the per-proposal cap in `TreasuryDatum`
 5. The governance script hash in `TreasuryDatum` matches the actual governance script (preventing a fake "Executed" UTxO from draining funds)
 6. The continuing treasury output holds at least `treasury_in - approved_transfer` lovelace (preventing the submitter from draining remaining ADA to their change address)
+7. The continuing treasury output holds at least `treasury_token_balance - approved_token_quantity` for each approved native token (`treasury_conserves_tokens` helper in `treasury.ak`)
 
 ### 2.2 Operator Agent — `fos_agent/`
 
@@ -126,11 +127,11 @@ Three modules handle the full transaction lifecycle:
 
   | Builder | Action |
   |---|---|
-  | `build_create_proposal_tx` | Create a new governance proposal UTxO; output holds `min_lovelace + deposit` |
+  | `build_create_proposal_tx` | Create a new governance proposal UTxO; output holds `min_lovelace + deposit`; optional `rationale_url` stored as tx metadata label 675 |
   | `build_cast_vote_tx` | Append a yes/no vote to a proposal |
   | `build_execute_proposal_tx` | Flip status `Voting → Executed` once quorum + timelock clear; refund `deposit` lovelace to proposer |
   | `build_expire_proposal_tx` | Flip status `Voting → Expired` after deadline without quorum; deposit stays locked |
-  | `build_execute_transfer_tx` | Spend treasury UTxO and pay the approved recipient |
+  | `build_execute_transfer_tx` | Spend treasury UTxO, pay approved ADA + native tokens to recipient, return remainder to treasury |
   | `build_execute_registry_action_tx` | Apply a `RotateAdmin` or `UpdateRegistryMember` mutation via `GovernanceApproval` redeemer (constructor 4) — no admin key needed |
   | `build_set_delegate_tx` | Set or clear a member's vote delegate — self-service, signed by member, uses `SetDelegate` redeemer (constructor 5) |
 - **`datums.py`** — serialises Python datum objects back to on-chain CBOR hex (the inverse of parsing). Used to construct the inline datum on the continuing output for every validator spend.
@@ -144,31 +145,32 @@ A Flask web application that renders the live on-chain state and lets a human op
 
 | Route | Description |
 |---|---|
-| `GET /` | Main dashboard — Active/History tab bar; member rows show delegate badges and ⇒ button |
-| `GET /api/state` | Full chain state as JSON (proposals, registry with `delegate` fields, treasury) |
-| `POST /api/propose` | Build a create-proposal transaction |
+| `GET /` | Main dashboard — Active/History tab bar; member rows show delegate badges and ⇒ button; DRep status panel in sidebar |
+| `GET /api/state` | Full chain state as JSON (proposals with `rationale_url` and `transfer_tokens`, registry with `delegate` fields, treasury) |
+| `POST /api/propose` | Build a create-proposal transaction; accepts `rationale_url` and `tokens[]` for native-token transfers |
 | `POST /api/vote` | Build a cast-vote transaction |
 | `POST /api/execute` | Build an execute-proposal transaction |
 | `POST /api/expire` | Build an expire-proposal transaction |
-| `POST /api/transfer` | Build a treasury transfer transaction |
+| `POST /api/transfer` | Build a treasury transfer transaction (ADA + native tokens) |
 | `POST /api/delegate` | Build a set-delegate transaction `{member_key_hash, new_delegate}` |
 | `POST /api/executor/run` | Run the executor agent for an Executed proposal |
+| `GET /api/drep` | Return the agent's CIP-95 DRep registration status and voting power |
 | `GET /api/audit` | Last 50 audit log entries |
 | `POST /api/tx/submit` | Submit a signed CBOR hex to the chain via Blockfrost |
 | `GET /api/wallet/balance` | ADA balance for an address (used by the wallet connect flow) |
 
-When no `BLOCKFROST_PROJECT_ID` is configured, the dashboard runs in **mock mode** — it generates a realistic demo state (5 members, 3 proposals, a treasury balance) so the interface can be explored without a deployment.
+When no `BLOCKFROST_PROJECT_ID` is configured, the dashboard runs in **mock mode** — it generates a realistic demo state (5 members, 4 proposals including a native token grant with a mock IPFS rationale, a treasury balance, and a DRep status panel) so the interface can be explored without a deployment.
 
 **Creating a proposal**
 
 A **New Proposal** button in the dashboard header opens a modal with four action-type cards (💸 Treasury Transfer, 📋 Off-Chain Decision, 👤 Update Member, 🔑 Rotate Admin). Selecting a type reveals the relevant fields:
 
-- *Treasury Transfer* — recipient (member dropdown or raw key hash), ADA amount, memo; cap enforced client-side and server-side
+- *Treasury Transfer* — recipient (member dropdown or raw key hash), ADA amount, memo; optionally one or more native tokens (policy ID + asset name + quantity rows added with "+ Add Token"); cap enforced client-side and server-side
 - *Off-Chain Decision* — decision memo
 - *Update Member* — target member (populated from live registry), new role, new status
 - *Rotate Admin* — new admin key hash
 
-Timeline fields (vote deadline hours, timelock hours), quorum threshold, and deposit amount (default 2 ADA, minimum 2 ADA) are always shown; the quorum hint displays the maximum achievable score for the current registry. On submit the form calls `POST /api/propose`, which validates all inputs, constructs the `GovernanceDatum`, and returns an `UnsignedTransaction` routed through the same sign-and-submit flow as voting.
+Timeline fields (vote deadline hours, timelock hours), quorum threshold, deposit amount (default 2 ADA, minimum 2 ADA), and an optional **Rationale URL** (IPFS CID `ipfs://…` or HTTPS) are always shown. The rationale URL is stored as transaction metadata label 675 — not in the on-chain datum — and the dashboard renders a "📄 Rationale" link on each proposal card. On submit the form calls `POST /api/propose`, which validates all inputs, constructs the `GovernanceDatum`, and returns an `UnsignedTransaction` routed through the same sign-and-submit flow as voting.
 
 **Proposal card structure**
 
@@ -176,7 +178,7 @@ Each governance proposal is rendered as a structured card with four labeled sect
 
 | Section | Content |
 |---|---|
-| **Action** | Type tag (e.g. `💸 Treasury Transfer`) + labeled detail rows — recipient, amount, memo for transfers; target key + new role/status for member updates |
+| **Action** | Type tag (e.g. `💸 Treasury Transfer`) + "📄 Rationale" link (if `rationale_url` set) + labeled detail rows — recipient, amount, native token rows, memo for transfers; target key + new role/status for member updates |
 | **Timeline** | Vote deadline and execute-after (timelock) as formatted UTC dates, with "Xd Xh remaining" or "Deadline passed" and timelock status |
 | **Voting Progress** | Animated progress bar, quorum percentage badge, "X of Y pts required" legend, deposit badge (🔒 locked / ↩ refunded / forfeited) |
 | **Votes Cast** | Voter chips showing truncated key hash, role (Admin/Treasurer/Member), and vote weight |
@@ -335,6 +337,8 @@ The treasury datum stores the `governance_script_hash` — the hash of the compi
 | Proposal deposit forfeited on expiry | `Expire` asserts `cont_lovelace >= in_lovelace` — full ADA including deposit stays locked |
 | Delegation is single-hop and self-service | `SetDelegate` redeemer checks `target.delegate == None`; signed by delegator only |
 | Delegated weight cannot be double-counted | `effective_vote_weight` excludes delegators who voted directly |
+| Native token recipient gets all approved tokens | `tokens_to_recipient` in `treasury.ak` sums each token across all outputs to recipient |
+| Native token remainder conserved in treasury | `treasury_conserves_tokens` asserts `after >= before - approved` for each token |
 | Agent decisions are auditable | Every action logged to `.fos_audit.jsonl` |
 | Human confirmation before on-chain submission | `FOS_AUTONOMOUS_MODE=false` (default) |
 
@@ -369,7 +373,7 @@ identity_registry/
 
 fos_agent/
   config.py                 ← Env var configuration
-  types.py                  ← Python mirrors of fos_types.ak (with CBOR parsing)
+  types.py                  ← Python mirrors of fos_types.ak (with CBOR parsing; includes NativeToken)
   chain.py                  ← Blockfrost client + FOSState snapshot
   transactions.py           ← One tx builder per Quorum action
   datums.py                 ← Python → on-chain CBOR serialisation
@@ -378,16 +382,19 @@ fos_agent/
   alerts.py                 ← AlertManager (Discord/Slack webhook notifications)
   executor.py               ← Executor agent (runs post-Execute mandate on-chain actions)
   proposal_agent.py         ← Proposal creation agent (natural language → GovernanceDatum)
+  drep.py                   ← CIP-95 DRep registration + status query + CIP-119 metadata generation
 
 fos_ui/
   app.py                    ← Flask routes + state → dict serialisation
-  templates/index.html      ← Single-page dashboard HTML
+  templates/index.html      ← Single-page dashboard HTML (includes DRep panel + rationale field)
   static/style.css          ← Design system
-  static/app.js             ← CIP-30 wallet + proposal card rendering
+  static/app.js             ← CIP-30 wallet + proposal card rendering (native tokens, IPFS links, DRep)
 
 scripts/
   deploy.py                 ← Preprod deployment (registry + treasury UTxOs)
   verify.py                 ← CIP-171 on-chain bytecode verification (metadata label 1984)
+  register_drep.py          ← CIP-95 DRep registration certificate builder + submitter
+  drep_metadata.json        ← CIP-119 DRep metadata template (upload to IPFS before registering)
 
 agent.py                    ← Builder agent (contract generation)
 rag.py                      ← ChromaDB RAG layer

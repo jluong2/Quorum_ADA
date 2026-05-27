@@ -1029,6 +1029,271 @@ test("GovernanceDatum deposit round-trips through CBOR (non-zero)",      test_go
 test("GovernanceDatum deposit round-trips through CBOR (zero)",          test_governance_datum_zero_deposit_roundtrip)
 
 
+# ─── 13. Native token treasury ────────────────────────────
+
+print("\n── 13. Native token treasury ────────────────────")
+
+from fos_agent.types import NativeToken, UpdateRegistryMemberAction
+from fos_agent.datums import governance_datum_cbor_hex
+from fos_agent.transactions import build_execute_transfer_tx
+
+def _make_token(policy="deadbeef" * 7, asset="514d524d4c", qty=100):
+    return NativeToken(policy_id=policy, asset_name=asset, quantity=qty)
+
+def test_native_token_action_serializes():
+    token = _make_token()
+    action = TreasuryTransferAction(
+        recipient="bb" * 28, lovelace=0, memo="token grant", tokens=[token]
+    )
+    gov = make_proposal(action=action, deposit=0)
+    hex_str = governance_datum_cbor_hex(gov)
+    recovered = GovernanceDatum.from_cbor_hex(hex_str)
+    ok(isinstance(recovered.action, TreasuryTransferAction))
+    eq(len(recovered.action.tokens), 1)
+    eq(recovered.action.tokens[0].quantity, 100)
+
+def test_native_token_action_empty_tokens_roundtrip():
+    action = TreasuryTransferAction(recipient="bb" * 28, lovelace=2_000_000, memo="ada only", tokens=[])
+    gov = make_proposal(action=action, deposit=0)
+    hex_str = governance_datum_cbor_hex(gov)
+    recovered = GovernanceDatum.from_cbor_hex(hex_str)
+    eq(len(recovered.action.tokens), 0)
+
+def test_build_execute_transfer_includes_tokens():
+    token = _make_token()
+    action = TreasuryTransferAction(recipient="bb" * 28, lovelace=0, memo="token", tokens=[token])
+    gov_datum = make_proposal(action=action, status=PROPOSAL_EXECUTED, deposit=0)
+    gov_utxo  = make_utxo("ab" * 32, 0, 2_000_000)
+    treas_utxo = make_utxo("cd" * 32, 0, 10_000_000)
+    reg_utxo  = make_utxo("ef" * 32, 0, 2_000_000)
+    treasury = make_treasury(max_transfer=5_000_000)
+    tx = build_execute_transfer_tx(
+        treasury_utxo=treas_utxo,
+        treasury_datum=treasury,
+        governance_utxo=gov_utxo,
+        governance_datum=gov_datum,
+        registry_utxo=reg_utxo,
+        change_address="",
+    )
+    ok(len(tx.outputs) == 2)
+    recipient_out = tx.outputs[0]
+    eq(len(recipient_out.tokens), 1)
+    eq(recipient_out.tokens[0].quantity, 100)
+
+def test_build_execute_transfer_token_description():
+    token = _make_token()
+    action = TreasuryTransferAction(recipient="bb" * 28, lovelace=1_000_000, memo="mixed", tokens=[token])
+    gov_datum = make_proposal(action=action, status=PROPOSAL_EXECUTED, deposit=0)
+    gov_utxo  = make_utxo("ab" * 32, 0, 2_000_000)
+    treas_utxo = make_utxo("cd" * 32, 0, 10_000_000)
+    reg_utxo  = make_utxo("ef" * 32, 0, 2_000_000)
+    treasury = make_treasury(max_transfer=5_000_000)
+    tx = build_execute_transfer_tx(
+        treasury_utxo=treas_utxo,
+        treasury_datum=treasury,
+        governance_utxo=gov_utxo,
+        governance_datum=gov_datum,
+        registry_utxo=reg_utxo,
+        change_address="",
+    )
+    ok("1 token(s)" in tx.description)
+
+def test_native_token_asset_name_str_hex():
+    # 51 52 4d 4c = Q R M L
+    t = NativeToken(policy_id="aa" * 28, asset_name="51524d4c", quantity=1)
+    eq(t.asset_name_str(), "QRML")
+
+def test_native_token_asset_name_str_fallback():
+    t = NativeToken(policy_id="aa" * 28, asset_name="zzzz_not_hex", quantity=1)
+    eq(t.asset_name_str(), "zzzz_not_hex")
+
+def test_build_create_proposal_token_only_raises_if_no_ada_and_no_tokens():
+    reg = make_registry(make_member("aa" * 28, role=ROLE_ADMIN))
+    reg_utxo = make_utxo("ab" * 32, 0, 2_000_000)
+    action = TreasuryTransferAction(recipient="bb" * 28, lovelace=0, memo="empty", tokens=[])
+    try:
+        build_create_proposal_tx(
+            registry_utxo=reg_utxo,
+            registry=reg,
+            proposer_key_hash="aa" * 28,
+            description="bad",
+            action=action,
+            vote_deadline_ms=int(time.time() * 1000) + 86_400_000,
+            execute_after_ms=int(time.time() * 1000) + 2 * 86_400_000,
+            quorum=1,
+            governance_script_hash="ff" * 28,
+            current_time_ms=int(time.time() * 1000),
+        )
+        ok(False, "should have raised ValueError")
+    except ValueError as e:
+        ok("token" in str(e).lower() or "lovelace" in str(e).lower() or "ADA" in str(e))
+
+test("NativeToken CBOR roundtrip through GovernanceDatum",        test_native_token_action_serializes)
+test("Empty tokens list roundtrip (ADA-only proposal)",           test_native_token_action_empty_tokens_roundtrip)
+test("build_execute_transfer_tx passes tokens to recipient output", test_build_execute_transfer_includes_tokens)
+test("build_execute_transfer_tx description includes token count", test_build_execute_transfer_token_description)
+test("NativeToken asset_name hex decoded to UTF-8",               test_native_token_asset_name_str_hex)
+test("NativeToken asset_name fallback when not valid hex",        test_native_token_asset_name_str_fallback)
+test("build_create_proposal_tx rejects zero ADA and zero tokens", test_build_create_proposal_token_only_raises_if_no_ada_and_no_tokens)
+
+
+# ─── 14. IPFS rationale URL ───────────────────────────────
+
+print("\n── 14. IPFS rationale URL ───────────────────────")
+
+def _make_registry_with_admin():
+    return make_registry(make_member("aa" * 28, role=ROLE_ADMIN))
+
+def test_rationale_url_stored_in_datum():
+    reg = _make_registry_with_admin()
+    reg_utxo = make_utxo("ab" * 32, 0, 2_000_000)
+    action = OffChainDecisionAction(memo="test decision")
+    tx = build_create_proposal_tx(
+        registry_utxo=reg_utxo,
+        registry=reg,
+        proposer_key_hash="aa" * 28,
+        description="Test IPFS proposal",
+        action=action,
+        vote_deadline_ms=int(time.time() * 1000) + 86_400_000,
+        execute_after_ms=int(time.time() * 1000) + 2 * 86_400_000,
+        quorum=1,
+        governance_script_hash="ff" * 28,
+        current_time_ms=int(time.time() * 1000),
+        rationale_url="ipfs://bafkreihdwdcefgh4dqkjv67uzcmw37nike4ttgrfkhnz4b4ygw2qcjzh7a",
+    )
+    ok(tx is not None)
+
+def test_rationale_url_in_metadata():
+    reg = _make_registry_with_admin()
+    reg_utxo = make_utxo("ab" * 32, 0, 2_000_000)
+    action = OffChainDecisionAction(memo="with rationale")
+    tx = build_create_proposal_tx(
+        registry_utxo=reg_utxo,
+        registry=reg,
+        proposer_key_hash="aa" * 28,
+        description="Rationale URL test",
+        action=action,
+        vote_deadline_ms=int(time.time() * 1000) + 86_400_000,
+        execute_after_ms=int(time.time() * 1000) + 2 * 86_400_000,
+        quorum=1,
+        governance_script_hash="ff" * 28,
+        current_time_ms=int(time.time() * 1000),
+        rationale_url="ipfs://bafkreitest",
+    )
+    ok(675 in tx.metadata)
+    eq(tx.metadata[675]["rationale"], "ipfs://bafkreitest")
+
+def test_no_rationale_url_no_metadata_key():
+    reg = _make_registry_with_admin()
+    reg_utxo = make_utxo("ab" * 32, 0, 2_000_000)
+    action = OffChainDecisionAction(memo="no url")
+    tx = build_create_proposal_tx(
+        registry_utxo=reg_utxo,
+        registry=reg,
+        proposer_key_hash="aa" * 28,
+        description="No rationale",
+        action=action,
+        vote_deadline_ms=int(time.time() * 1000) + 86_400_000,
+        execute_after_ms=int(time.time() * 1000) + 2 * 86_400_000,
+        quorum=1,
+        governance_script_hash="ff" * 28,
+        current_time_ms=int(time.time() * 1000),
+    )
+    ok(675 not in tx.metadata)
+
+def test_rationale_url_in_gov_datum():
+    reg = _make_registry_with_admin()
+    reg_utxo = make_utxo("ab" * 32, 0, 2_000_000)
+    action = OffChainDecisionAction(memo="check datum url")
+    url = "ipfs://bafkreitest_datum"
+    tx = build_create_proposal_tx(
+        registry_utxo=reg_utxo,
+        registry=reg,
+        proposer_key_hash="aa" * 28,
+        description="Datum rationale test",
+        action=action,
+        vote_deadline_ms=int(time.time() * 1000) + 86_400_000,
+        execute_after_ms=int(time.time() * 1000) + 2 * 86_400_000,
+        quorum=1,
+        governance_script_hash="ff" * 28,
+        current_time_ms=int(time.time() * 1000),
+        rationale_url=url,
+    )
+    # The datum hex embeds the on-chain datum (no rationale_url); only metadata has it
+    ok(tx.metadata[675]["rationale"] == url)
+
+test("build_create_proposal_tx accepts rationale_url",          test_rationale_url_stored_in_datum)
+test("rationale_url stored in tx metadata label 675",           test_rationale_url_in_metadata)
+test("no rationale_url → no metadata key 675",                  test_no_rationale_url_no_metadata_key)
+test("rationale_url accessible from UnsignedTransaction",       test_rationale_url_in_gov_datum)
+
+
+# ─── 15. DRep integration ─────────────────────────────────
+
+print("\n── 15. DRep integration ─────────────────────────")
+
+from fos_agent.drep import (
+    build_drep_registration,
+    build_drep_retirement,
+    generate_drep_metadata,
+    query_drep_status,
+    drep_id_from_key_hash,
+    DREP_DEPOSIT_PREPROD,
+    DREP_DEPOSIT_MAINNET,
+)
+
+def test_drep_registration_descriptor():
+    cert = build_drep_registration("aa" * 28, "https://example.com/meta.json", "bb" * 32)
+    eq(cert.drep_key_hash, "aa" * 28)
+    eq(cert.anchor_url, "https://example.com/meta.json")
+    eq(cert.anchor_hash, "bb" * 32)
+    ok(cert.deposit_lovelace > 0)
+
+def test_drep_retirement_descriptor():
+    cert = build_drep_retirement("cc" * 28)
+    eq(cert.drep_key_hash, "cc" * 28)
+    eq(cert.deposit_lovelace, 0)
+    eq(cert.anchor_url, "")
+
+def test_drep_deposit_preprod():
+    eq(DREP_DEPOSIT_PREPROD, 2_000_000)
+
+def test_drep_deposit_mainnet():
+    eq(DREP_DEPOSIT_MAINNET, 500_000_000)
+
+def test_drep_id_fallback():
+    kid = drep_id_from_key_hash("aa" * 28)
+    ok(len(kid) > 0)
+    ok("drep" in kid.lower())
+
+def test_generate_drep_metadata_shape():
+    meta = generate_drep_metadata()
+    ok("body" in meta)
+    ok("givenName" in meta["body"])
+    ok("motivations" in meta["body"])
+    ok("references" in meta["body"])
+    ok(len(meta["body"]["references"]) > 0)
+
+def test_query_drep_status_mock():
+    # Without BLOCKFROST_PROJECT_ID, uses mock data
+    info = query_drep_status("aa" * 28)
+    ok(info.drep_id is not None)
+    ok(info.delegator_count >= 0)
+
+def test_generate_drep_metadata_custom_name():
+    meta = generate_drep_metadata(name="My Custom DRep")
+    eq(meta["body"]["givenName"], "My Custom DRep")
+
+test("DRep registration descriptor has correct fields",  test_drep_registration_descriptor)
+test("DRep retirement descriptor has zero deposit",      test_drep_retirement_descriptor)
+test("DRep preprod deposit = 2 ADA",                     test_drep_deposit_preprod)
+test("DRep mainnet deposit = 500 ADA",                   test_drep_deposit_mainnet)
+test("drep_id_from_key_hash returns drep-prefixed ID",   test_drep_id_fallback)
+test("generate_drep_metadata has required CIP-119 fields", test_generate_drep_metadata_shape)
+test("query_drep_status works in mock mode",             test_query_drep_status_mock)
+test("generate_drep_metadata accepts custom name",       test_generate_drep_metadata_custom_name)
+
+
 # ─── Results ──────────────────────────────────────────────
 
 total = passed + failed

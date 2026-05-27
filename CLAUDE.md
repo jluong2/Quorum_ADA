@@ -62,6 +62,18 @@ export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."    # optional al
 export FOS_TREASURY_ALERT_ADA="10"      # alert when treasury drops below this (ADA)
 ```
 
+CIP-95 DRep registration:
+```bash
+# Optional DRep env vars (for register_drep.py)
+export DREP_ANCHOR_URL="https://…/drep_metadata.json"   # after uploading scripts/drep_metadata.json
+export DREP_ANCHOR_HASH="<blake2b-256 of metadata JSON>"
+
+python3 scripts/register_drep.py --dry-run   # preview
+python3 scripts/register_drep.py             # register
+python3 scripts/register_drep.py --retire    # retire
+python3 scripts/register_drep.py --print-metadata  # emit CIP-119 JSON
+```
+
 CIP-171 on-chain contract verification:
 ```bash
 # Publish cryptographic link between deployed script hashes and source commit
@@ -148,7 +160,8 @@ All cross-validator types live here. The most important:
 - **`RegistryMember`** — `key_hash`, `role`, `joined_at`, `status`, and now `delegate: Option<VerificationKeyHash>`. The `delegate` field implements liquid democracy: if set, this member's voting weight flows to the target when the target votes (and this member has not voted directly). Single-hop only — the target's `delegate` must be `None`.
 - **`RegistryDatum`** — `members: List<RegistryMember>` + `admin` + `version` + `governance_script_hash`. The `version` field is monotonically incremented on every mutation (including `SetDelegate`). Governance and treasury pin this at proposal creation; a registry update invalidates open proposals. `governance_script_hash` is the hash of the governance validator — immutable after deployment, used by the `GovernanceApproval` redeemer to authenticate governance reference inputs.
 - **`GovernanceDatum`** — includes `action: ProposalAction`, `status: ProposalStatus`, `registry_ref: OutputReference`, `registry_version: Int`, and `deposit: Int`. The `deposit` field records the lovelace locked by the proposer at creation time. On Execute (quorum met) the deposit is refunded to the proposer in the same transaction. On Expire (deadline missed without quorum) the deposit stays locked in the governance UTxO — forfeited as a spam deterrent. Minimum deposit is `2_000_000` lovelace (2 ADA), enforced both on-chain (`min_deposit` constant in `governance.ak`) and off-chain (`MIN_PROPOSAL_DEPOSIT` in `transactions.py`).
-- **`ProposalAction`** — the typed union that connects governance to other validators: `TreasuryTransfer { recipient, lovelace, memo }` (treasury pays out), `RotateAdmin` (registry rotates admin key), `UpdateRegistryMember` (registry updates a member), `OffChainDecision` (no on-chain execution). Treasury and registry validators each pattern-match on only their relevant action variants.
+- **`NativeToken`** — `{ policy_id: ByteArray, asset_name: ByteArray, quantity: Int }`. Used in `TreasuryTransfer.tokens` to transfer Cardano native assets alongside ADA. The treasury validator enforces `tokens_to_recipient` (recipient gets all approved tokens) and `treasury_conserves_tokens` (continuing output holds at least the remainder). Python-side: `NativeToken.asset_name_str()` tries UTF-8 decode, falls back to hex.
+- **`ProposalAction`** — the typed union that connects governance to other validators: `TreasuryTransfer { recipient, lovelace, memo, tokens: List<NativeToken> }` (treasury pays out ADA and/or native tokens), `RotateAdmin` (registry rotates admin key), `UpdateRegistryMember` (registry updates a member), `OffChainDecision` (no on-chain execution). Treasury and registry validators each pattern-match on only their relevant action variants. The `tokens` field was added at the end of `TreasuryTransfer` for backward compatibility (old datums with 3 fields still parse — `tokens` defaults to `[]`).
 
 ### Key invariants
 
@@ -165,6 +178,8 @@ All cross-validator types live here. The most important:
 **High-stakes actions require a 2/3 supermajority.** `RotateAdmin` and `TreasuryTransfer > 10 ADA` must satisfy `yes_score * 3 >= max_possible_score * 2` in addition to the proposal's `quorum` field. Enforced by `action_requires_supermajority()` / `supermajority_met()` in `governance.ak` and mirrored by the same functions in `fos_agent/types.py`.
 
 **Treasury conserves ADA.** The continuing treasury output must hold at least `treasury_in_lovelace - lovelace` after a transfer. Without this check, the tx submitter could drain the remaining balance to their change address.
+
+**Treasury conserves native tokens.** `treasury_conserves_tokens(own_value, continuing_value, tokens)` in `treasury.ak` asserts for each approved token that `held_after >= held_before - quantity`. Without this check, the submitter could drain remaining tokens to their change address alongside the ADA.
 
 **Governance datum fields are fully locked in Execute and Expire.** Both status-transition paths assert all ten immutable fields (`proposer`, `description`, `action`, `votes`, `quorum`, `execute_after`, `vote_deadline`, `registry_ref`, `registry_version`, `deposit`) are unchanged on the continuing output. Only `status` may change.
 
@@ -198,7 +213,7 @@ All cross-validator types live here. The most important:
 - **`fos_agent/config.py`** — All configuration from env vars. `is_configured()` checks whether all required script hashes and the Blockfrost key are set. Without them, `BlockfrostClient` runs in mock mode.
 - **`fos_agent/types.py`** — Python mirrors of every type in `lib/fos_types.ak`, with `from_cbor_hex()` classmethods for deserializing Blockfrost inline datums. CBOR encoding: records → `Constr(0, fields)`, enum variant N → `Constr(N, [])`, `Bool True` → `Constr(1, [])`. Requires `cbor2`.
 - **`fos_agent/chain.py`** — `BlockfrostClient` wraps the Blockfrost REST API and returns typed Python objects. `read_fos_state()` snapshots all three validators in one call and returns a `FOSState`. `FOSState` has derived properties: `executable_proposals`, `expirable_proposals`, `executed_proposals`, `unreachable_quorum_proposals`, `executed_awaiting_registry` — computed from quorum, timelock, registry score, action type, and current time. `unreachable_quorum_proposals` flags active proposals where the max possible yes score is already below the quorum threshold so the agent can expire them immediately. `executed_awaiting_registry` flags Executed proposals with `RotateAdmin` or `UpdateRegistryMember` actions that still need `execute_registry_action` called.
-- **`fos_agent/transactions.py`** — One builder per FOS action. Each returns an `UnsignedTransaction` (inputs, reference\_inputs, outputs, redeemers, validity range, required signers). The builders assert security conditions before constructing — e.g. `build_execute_transfer_tx` raises if `status != Executed`, action is not `TreasuryTransfer`, or `lovelace > max_transfer_lovelace`. `build_execute_registry_action_tx` uses redeemer constructor 4 (`GovernanceApproval`) and applies the mutation in Python before serialising the new datum. `build_set_delegate_tx` uses redeemer constructor 5 (`SetDelegate`) and enforces no-self, no-chain, and active-target checks before building. `build_create_proposal_tx` accepts a `deposit` parameter (default `2_000_000`, minimum enforced by `MIN_PROPOSAL_DEPOSIT`); the proposal output holds `min_lovelace + deposit`. `build_execute_proposal_tx` adds a second output refunding `deposit` lovelace to the proposer's address when `deposit > 0`; the continuing governance output holds `in_lovelace - deposit`.
+- **`fos_agent/transactions.py`** — One builder per FOS action. Each returns an `UnsignedTransaction` (inputs, reference\_inputs, outputs, redeemers, validity range, required signers). The builders assert security conditions before constructing — e.g. `build_execute_transfer_tx` raises if `status != Executed`, action is not `TreasuryTransfer`, or `lovelace > max_transfer_lovelace`. `build_execute_transfer_tx` now passes `action.tokens` to the recipient `TxOutput` and notes that the signing layer is responsible for returning the token remainder to the treasury. `build_execute_registry_action_tx` uses redeemer constructor 4 (`GovernanceApproval`) and applies the mutation in Python before serialising the new datum. `build_set_delegate_tx` uses redeemer constructor 5 (`SetDelegate`) and enforces no-self, no-chain, and active-target checks before building. `build_create_proposal_tx` accepts a `deposit` parameter (default `2_000_000`, minimum enforced by `MIN_PROPOSAL_DEPOSIT`) and an optional `rationale_url: str = ""` — when set, the URL is stored as tx metadata label 675 (`{"rationale": url}`); the proposal output holds `min_lovelace + deposit`. `build_execute_proposal_tx` adds a second output refunding `deposit` lovelace to the proposer's address when `deposit > 0`; the continuing governance output holds `in_lovelace - deposit`.
 - **`fos_agent/agent.py`** — `FOSAgent` dispatches tool calls to `chain.py` / `transactions.py`. `run_fos_agent(instruction)` is the one-shot entry point; `run_monitor(interval)` wraps it in a polling loop, calling `AlertManager.check()` before each agent turn. Every decision is written to `.fos_audit.jsonl` via the `write_audit_log` tool. When `AUTONOMOUS_MODE=true`, `_sign_and_submit()` is called after each transaction builder — it fetches the agent's wallet UTxOs, loads compiled scripts from `plutus.json`, calls `signing.build_signed_transaction()`, and submits via Blockfrost.
 - **`fos_agent/alerts.py`** — `AlertManager` fires Discord/Slack webhook notifications for: new proposals, quorum reached, deadline within 24 h, high-value transfer proposals, treasury below threshold, and **at-risk proposals** (< 48 h left, quorum unmet, yes votes below 50% of maximum possible). Deduplicates via an in-memory `_fired` set so each alert fires at most once per process lifetime. Configure: `DISCORD_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `FOS_TREASURY_ALERT_ADA`.
 - **`fos_agent/proposal_agent.py`** — `run_proposal_agent(instruction)` drafts and submits governance proposals from natural language. Tools: `read_fos_state`, `draft_proposal` (validates feasibility, enforces supermajority quorum for high-stakes actions, returns preview), `submit_proposal` (only called after user confirms). Signs and submits autonomously when `AUTONOMOUS_MODE=true`.
@@ -274,6 +289,26 @@ execute_registry_action → builds UnsignedTransaction with:
 
 Both modules degrade gracefully — `datums.py` raises `AssertionError` if `cbor2` is missing; `signing.py` returns mock strings if `PyCardano` is absent.
 
+### CIP-95 DRep integration (`fos_agent/drep.py` + `scripts/register_drep.py`)
+
+**`fos_agent/drep.py`** — Cardano Delegated Representative (CIP-95) support:
+- `drep_id_from_key_hash(key_hash)` — derives bech32 `drep1…` ID from the agent's vkey hash (uses PyCardano bech32; falls back to readable hex stub)
+- `query_drep_status(key_hash)` — returns `DRepInfo` (registered, voting power, delegator count, anchor URL) via Blockfrost `/governance/dreps/{hash}`; mock mode returns plausible data when `BLOCKFROST_PROJECT_ID` is absent
+- `build_drep_registration(key_hash, anchor_url, anchor_hash)` — returns a `DRepRegistrationTx` descriptor; deposit is `2_000_000` on preprod, `500_000_000` on mainnet
+- `build_drep_retirement(key_hash)` — returns a retirement descriptor
+- `generate_drep_metadata(...)` — builds a CIP-119 compliant metadata dict; upload the JSON to IPFS, then pass URL + blake2b-256 hash to `build_drep_registration`
+
+**`scripts/register_drep.py`** — CLI for DRep lifecycle:
+```bash
+python3 scripts/register_drep.py --dry-run        # preview without submitting
+python3 scripts/register_drep.py                   # register on preprod
+python3 scripts/register_drep.py --retire          # retire DRep
+python3 scripts/register_drep.py --print-metadata  # print CIP-119 JSON
+```
+Requires `DREP_ANCHOR_URL` and `DREP_ANCHOR_HASH` env vars (anchor must be uploaded first). The `GET /api/drep` endpoint in `fos_ui/app.py` exposes live DRep status to the dashboard.
+
+**`scripts/drep_metadata.json`** — CIP-119 metadata template with the agent's motivation, objectives, and qualifications. Upload to IPFS and pass the resulting CID as `DREP_ANCHOR_URL`.
+
 ### CIP-171 contract verification (`scripts/verify.py`)
 
 Publishes an on-chain verification record (Cardano metadata label 1984) linking deployed script hashes to the exact git commit and Aiken version used to compile them. Anyone can independently verify by cloning the repo, checking out the pinned commit, running `aiken build`, and comparing the resulting hashes.
@@ -316,13 +351,14 @@ Security defaults: binds to `127.0.0.1` (loopback), debug off, CSRF Origin check
 
 Routes:
 - `GET  /`               — dashboard HTML (Active / History tab bar; member delegate buttons)
-- `GET  /api/state`      — full Quorum state JSON (includes `delegate` / `delegate_short` per member)
-- `POST /api/propose`    — `{action_type, description, …}` → create-proposal tx
+- `GET  /api/state`      — full Quorum state JSON (includes `delegate` / `delegate_short` per member; proposals include `rationale_url`, `transfer_tokens`, `deposit_ada`)
+- `POST /api/propose`    — `{action_type, description, rationale_url?, tokens?[], deposit_ada, …}` → create-proposal tx
 - `POST /api/vote`       — `{proposal_ref, approve}` → `UnsignedTransaction.summary()`
 - `POST /api/execute`    — `{proposal_ref}` → execute-proposal tx
 - `POST /api/expire`     — `{proposal_ref}` → expire-proposal tx
-- `POST /api/transfer`   — `{governance_ref}` → execute-transfer tx
+- `POST /api/transfer`   — `{governance_ref}` → execute-transfer tx (ADA + native tokens)
 - `POST /api/delegate`   — `{member_key_hash, new_delegate}` → set-delegate tx (liquid democracy)
+- `GET  /api/drep`       — agent DRep registration status (registered, voting power, delegator count)
 - `GET  /api/audit`      — last 50 audit log entries
 - `POST /api/executor/run` — `{proposal_ref}` → run executor agent for an Executed proposal
 

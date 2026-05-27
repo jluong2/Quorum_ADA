@@ -358,9 +358,10 @@ def build_execute_transfer_tx(
         else _script_address(treasury_datum.governance_script_hash, net)  # fallback estimate
     )
 
+    token_desc = f" + {len(action.tokens)} token(s)" if action.tokens else ""
     return UnsignedTransaction(
         description=(
-            f"ExecuteTransfer {action.lovelace / 1_000_000:.2f}₳ "
+            f"ExecuteTransfer {action.lovelace / 1_000_000:.2f}₳{token_desc} "
             f"→ {action.recipient[:12]}…  memo={action.memo!r}"
         ),
         inputs=[treasury_utxo.ref],
@@ -369,11 +370,14 @@ def build_execute_transfer_tx(
             TxOutput(
                 address=_pkh_address(action.recipient, net),
                 lovelace=action.lovelace,
+                tokens=action.tokens,
             ),
             TxOutput(
                 address=treasury_address,
                 lovelace=remaining,
                 datum_hex=_treasury_datum_hex_unchanged(treasury_utxo),
+                # Native token remainder is managed by the signing layer / ledger;
+                # the validator checks conservation via treasury_conserves_tokens.
             ),
         ],
         redeemers=[
@@ -483,6 +487,7 @@ def build_create_proposal_tx(
     current_time_ms: int,
     min_lovelace: int = 2_000_000,
     deposit: int = 2_000_000,
+    rationale_url: str = "",
 ) -> UnsignedTransaction:
     """
     Create a new governance proposal UTxO at the governance script address.
@@ -513,8 +518,10 @@ def build_create_proposal_tx(
         )
 
     if isinstance(action, TreasuryTransferAction):
-        if action.lovelace <= 0:
-            raise ValueError("Transfer amount must be positive")
+        if action.lovelace <= 0 and not action.tokens:
+            raise ValueError("Transfer must include ADA or at least one native token")
+        if action.lovelace < 0:
+            raise ValueError("Transfer lovelace cannot be negative")
         if not action.recipient or len(action.recipient) < 56:
             raise ValueError("Recipient must be a valid 28-byte key hash (56 hex chars)")
 
@@ -530,14 +537,20 @@ def build_create_proposal_tx(
         registry_ref=registry_utxo.as_output_reference(),
         registry_version=registry.version,
         deposit=deposit,
+        rationale_url=rationale_url,
     )
 
     net = _network_from_config()
     gov_address = _script_address(governance_script_hash, net)
 
+    # CIP-20 message metadata (label 674) + optional IPFS rationale (label 675)
+    metadata: dict = {"msg": ["Quorum: create proposal", description[:64]]}
+    if rationale_url:
+        metadata[675] = {"rationale": rationale_url}
+
     return UnsignedTransaction(
         description=f"CreateProposal: {description[:60]}",
-        inputs=[],   # signing layer adds proposer wallet UTxO(s)
+        inputs=[],   # signing layer adds proposer wallet UTxOs
         reference_inputs=[],
         outputs=[
             TxOutput(
@@ -549,7 +562,7 @@ def build_create_proposal_tx(
         redeemers=[],
         validity_start_ms=current_time_ms,
         required_signers=[proposer_key_hash],
-        metadata={"msg": ["Quorum: create proposal"]},
+        metadata=metadata,
     )
 
 

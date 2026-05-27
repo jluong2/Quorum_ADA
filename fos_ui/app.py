@@ -37,6 +37,7 @@ from fos_agent.transactions import (
 )
 from fos_agent.types import (
     GovernanceDatum,
+    NativeToken,
     RegistryDatum,
     TreasuryDatum,
     TreasuryTransferAction,
@@ -90,6 +91,14 @@ def _action_details(action) -> dict:
             "amount_ada": f"{action.lovelace / 1_000_000:.2f}",
             "lovelace": action.lovelace,
             "memo": action.memo or "—",
+            "tokens": [
+                {
+                    "policy_id": t.policy_id,
+                    "asset_name": t.asset_name_str(),
+                    "quantity": t.quantity,
+                }
+                for t in action.tokens
+            ],
         }
     if isinstance(action, RotateAdminAction):
         return {
@@ -193,8 +202,14 @@ def _state_to_dict(s: FOSState) -> dict:
                 f"{gov.action.lovelace / 1_000_000:.2f}"
                 if is_transfer else None
             ),
+            "transfer_tokens": (
+                [{"asset_name": t.asset_name_str(), "quantity": t.quantity, "policy_id": t.policy_id}
+                 for t in gov.action.tokens]
+                if is_transfer else []
+            ),
             "deposit": gov.deposit,
             "deposit_ada": f"{gov.deposit / 1_000_000:.2f}" if gov.deposit else None,
+            "rationale_url": gov.rationale_url or None,
             "lovelace": utxo.lovelace,
         })
 
@@ -271,6 +286,7 @@ def api_propose():
     quorum        = int(body.get("quorum", 0))
     deposit_ada   = float(body.get("deposit_ada", 2.0))
     deposit_lovelace = max(round(deposit_ada * 1_000_000), 2_000_000)
+    rationale_url = body.get("rationale_url", "").strip()
     proposer      = body.get("proposer_key_hash", "") or config.FOS_AGENT_KEY_HASH or "00" * 28
 
     if not description:
@@ -279,10 +295,21 @@ def api_propose():
     # Build the typed action
     try:
         if action_type == "TreasuryTransfer":
+            raw_tokens = body.get("tokens", [])
+            tokens = [
+                NativeToken(
+                    policy_id=t["policy_id"].strip(),
+                    asset_name=t["asset_name"].strip(),
+                    quantity=int(t["quantity"]),
+                )
+                for t in raw_tokens
+                if t.get("policy_id") and t.get("quantity")
+            ]
             action = TreasuryTransferAction(
                 recipient=body.get("recipient", "").strip(),
                 lovelace=round(float(body.get("amount_ada", 0)) * 1_000_000),
                 memo=body.get("memo", "").strip(),
+                tokens=tokens,
             )
         elif action_type == "OffChainDecision":
             action = OffChainDecisionAction(memo=body.get("memo", "").strip())
@@ -326,6 +353,7 @@ def api_propose():
             governance_script_hash=config.GOVERNANCE_SCRIPT_HASH,
             current_time_ms=s.current_time_ms,
             deposit=deposit_lovelace,
+            rationale_url=rationale_url,
         )
         return jsonify({
             "ok": True,
@@ -487,6 +515,43 @@ def api_executor_run():
         return jsonify({"ok": True, "result": result})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/drep")
+def api_drep():
+    """Return the agent's current CIP-95 DRep status."""
+    key_hash = config.FOS_AGENT_KEY_HASH
+    if not key_hash:
+        return jsonify({
+            "ok": True,
+            "drep": {
+                "registered": False,
+                "drep_id": "—",
+                "voting_power_ada": "—",
+                "delegator_count": 0,
+                "is_active": False,
+                "anchor_url": "",
+                "mock": True,
+            },
+        })
+    try:
+        from fos_agent.drep import query_drep_status, drep_id_from_key_hash
+        info = query_drep_status(key_hash)
+        return jsonify({
+            "ok": True,
+            "drep": {
+                "registered": info.registered,
+                "drep_id": info.drep_id,
+                "voting_power_lovelace": info.voting_power,
+                "voting_power_ada": f"{info.voting_power / 1_000_000:.2f}",
+                "delegator_count": info.delegator_count,
+                "is_active": info.is_active,
+                "anchor_url": info.anchor_url,
+                "last_active_epoch": info.last_active_epoch,
+            },
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/audit")

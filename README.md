@@ -16,6 +16,9 @@ Most governance tooling assumes a human is reading dashboards and clicking butto
 - In default mode it describes its intent and waits for human confirmation before submitting anything
 - **Liquid democracy**: members can delegate their voting weight to another member; delegators who vote directly override their own delegation
 - **Proposal deposits**: proposers lock ADA (minimum 2 ADA) when creating a proposal — refunded on pass, forfeited on expiry; deters spam without governance overhead
+- **Native token treasury**: `TreasuryTransfer` proposals can include a list of `NativeToken` assets alongside ADA; the treasury validator enforces token conservation on the continuing output
+- **IPFS rationale documents**: proposals can link to a CID or HTTPS URL stored as tx metadata (label 675); the dashboard shows a "📄 Rationale" link on each card
+- **CIP-95 DRep registration**: the agent can register as a Cardano Delegated Representative so ADA holders can delegate their on-chain voting power to it; `scripts/register_drep.py` builds the certificate, `fos_agent/drep.py` queries status
 - **Webhook alerts**: Discord/Slack notifications for new proposals, quorum reached, approaching deadlines, high-value transfers, and at-risk proposals (< 48 h, < 50% participation)
 - **Proposal history**: dashboard Active/History tab shows executed and expired proposals with full vote records
 
@@ -65,7 +68,7 @@ python3 fos_ui/app.py
 # → http://localhost:5000
 ```
 
-Mock mode generates a realistic demo state (5 members, 3 proposals, a treasury balance) so the full interface can be explored without a deployment or Blockfrost key.
+Mock mode generates a realistic demo state (5 members, 4 proposals including a native token grant, a treasury balance, and a DRep status panel) so the full interface can be explored without a deployment or Blockfrost key.
 
 ---
 
@@ -83,7 +86,7 @@ Three Aiken validators, each holding one UTxO of on-chain state:
 
 | Action | Execution path |
 |---|---|
-| `TreasuryTransfer` | Release ADA to an approved recipient (treasury validator) |
+| `TreasuryTransfer` | Release ADA (and/or native tokens) to an approved recipient (treasury validator) |
 | `RotateAdmin` | Replace the registry admin key (registry validator — no admin key needed) |
 | `UpdateRegistryMember` | Change a member's role or status (registry validator — no admin key needed) |
 | `OffChainDecision` | Record a governance decision with no on-chain execution |
@@ -97,7 +100,7 @@ Three Aiken validators, each holding one UTxO of on-chain state:
 - GovernanceApproval is replay-proof. A governance proposal can only mutate the registry version it was voted on; once the version increments, the same proposal reference fails the version check.
 - Treasury authenticates governance by script hash. A fake "Executed" UTxO at an arbitrary address cannot drain funds.
 - Treasury conserves ADA. The continuing treasury output must hold at least `treasury_in - approved_transfer` lovelace — the submitter cannot drain remaining ADA to their change address.
-- Governance datum fields are fully locked in Execute and Expire paths. All nine immutable fields (`proposer`, `description`, `action`, `votes`, `quorum`, `execute_after`, `vote_deadline`, `registry_ref`, `registry_version`) are checked on the continuing output — no field can be silently mutated during status transitions.
+- Governance datum fields are fully locked in Execute and Expire paths. All ten immutable fields (`proposer`, `description`, `action`, `votes`, `quorum`, `execute_after`, `vote_deadline`, `registry_ref`, `registry_version`, `deposit`) are checked on the continuing output — no field can be silently mutated during status transitions.
 - Suspended members lose voting weight retroactively. `count_weighted_yes` checks `status == Active` at execution time, not at vote-cast time.
 - Every validator requires a continuing output — state can never disappear from the chain.
 
@@ -180,6 +183,12 @@ python3 scripts/deploy.py
 python3 scripts/verify.py --dry-run   # preview first
 python3 scripts/verify.py             # publishes metadata label 1984 on-chain
 # Anyone can now verify your contracts match the source at the pinned commit
+
+# 3a. Register the agent as a CIP-95 DRep (optional — ADA holders can then delegate voting power)
+export DREP_ANCHOR_URL="https://…/drep_metadata.json"   # upload scripts/drep_metadata.json first
+export DREP_ANCHOR_HASH="<blake2b-256 of metadata>"
+python3 scripts/register_drep.py --dry-run   # preview
+python3 scripts/register_drep.py             # submits DRep registration certificate
 
 # 4. Start the agent (confirmation mode — describes intent, waits for approval)
 export FOS_REGISTRY_SCRIPT_HASH="..."

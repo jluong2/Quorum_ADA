@@ -104,6 +104,33 @@
         </div>
       </div>
 
+      <!-- DRep card -->
+      <div class="card" id="drep-card">
+        <div class="card-header">
+          <span class="card-title">DRep Status</span>
+          <span id="drep-status-dot" class="dot dot-amber"></span>
+        </div>
+        <div class="drep-id-label">DRep ID</div>
+        <div class="drep-id mono tiny" id="drep-id">—</div>
+        <div class="treasury-divider" style="margin:8px 0"></div>
+        <div class="treasury-meta">
+          <div class="tm-row">
+            <span class="tm-key">Registered</span>
+            <span class="tm-val" id="drep-registered">—</span>
+          </div>
+          <div class="tm-row">
+            <span class="tm-key">Voting Power</span>
+            <span class="tm-val" id="drep-voting-power">—</span>
+          </div>
+          <div class="tm-row">
+            <span class="tm-key">Delegators</span>
+            <span class="tm-val" id="drep-delegators">—</span>
+          </div>
+        </div>
+        <button class="btn-ghost small" style="margin-top:10px;width:100%"
+                onclick="loadDrep()">↻ Refresh</button>
+      </div>
+
       <!-- Activity feed -->
       <div class="card" id="activity-card">
         <div class="card-header">
@@ -247,6 +274,15 @@
             <label class="form-label" for="p-deposit-ada">Deposit <span class="form-hint">ADA — refunded if proposal passes</span></label>
             <input type="number" id="p-deposit-ada" class="form-input" value="2" min="2" step="0.5">
           </div>
+        </div>
+
+        <!-- Rationale URL (IPFS CID) -->
+        <div class="form-group">
+          <label class="form-label" for="p-rationale-url">
+            Rationale URL <span class="form-hint">optional — IPFS CID (ipfs://…) or HTTPS link to supporting document</span>
+          </label>
+          <input type="text" id="p-rationale-url" class="form-input"
+                 placeholder="ipfs://bafk…  or  https://…" maxlength="200">
         </div>
 
         <!-- Error -->

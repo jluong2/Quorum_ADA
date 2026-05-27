@@ -21,6 +21,7 @@ except ImportError:
 
 from .types import (
     GovernanceDatum,
+    NativeToken,
     OutputReference,
     RegistryDatum,
     RegistryMember,
@@ -279,6 +280,7 @@ def mock_fos_state() -> FOSState:
         quorum=4,
         registry_ref=gov_ref,
         registry_version=3,
+        rationale_url="ipfs://bafkreihdwdcefgh4dqkjv67uzcmw37nike4ttgrfkhnz4b4ygw2qcjzh7a",
     )
     utxo1 = UTxO(tx_hash="gov1tx0" + "0" * 57, output_index=0, lovelace=2_000_000, datum_hex="")
     utxo1.datum = gov1
@@ -322,7 +324,30 @@ def mock_fos_state() -> FOSState:
     utxo3 = UTxO(tx_hash="gov3tx0" + "0" * 57, output_index=0, lovelace=2_000_000, datum_hex="")
     utxo3.datum = gov3
 
-    proposals = [(utxo1, gov1), (utxo2, gov2), (utxo3, gov3)]
+    # Proposal 4: active TreasuryTransfer with native tokens
+    quorum_token = NativeToken(policy_id="deadbeef" * 7, asset_name="51524d4c", quantity=500)  # QRML
+    action4 = TreasuryTransferAction(
+        recipient="c3d4e5f6" * 7,
+        lovelace=0,
+        memo="QRML token grant — Q2 contributor reward",
+        tokens=[quorum_token],
+    )
+    gov4 = GovernanceDatum(
+        proposer="b2c3d4e5" * 7,
+        description="QRML token grant: 500 QRML to core contributor for Q2 work",
+        action=action4,
+        votes=[VoteRecord(voter="b2c3d4e5" * 7, approve=True)],
+        status=PROPOSAL_VOTING,
+        vote_deadline=now + 5 * 86400000,
+        execute_after=now + 6 * 86400000,
+        quorum=2,
+        registry_ref=gov_ref,
+        registry_version=3,
+    )
+    utxo4 = UTxO(tx_hash="gov4tx0" + "0" * 57, output_index=0, lovelace=2_000_000, datum_hex="")
+    utxo4.datum = gov4
+
+    proposals = [(utxo1, gov1), (utxo2, gov2), (utxo3, gov3), (utxo4, gov4)]
 
     # ── Treasury ──────────────────────────────────────────
     treas_datum = TreasuryDatum(
