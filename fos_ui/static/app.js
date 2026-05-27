@@ -290,6 +290,9 @@ function proposalCard(p, d, extraClass = '') {
         <div class="quorum-legend">
           <span class="${p.quorum_met?'ql-met':'ql-pending'}">${qLabel}</span>
           <span class="ql-score">${p.yes_score} of ${p.quorum} pts required</span>
+          ${p.deposit_ada ? `<span class="deposit-badge ${p.status==='Executed'?'refunded':p.status==='Expired'?'forfeited':'locked'}">
+            ${p.status==='Executed'?'↩':'🔒'} ${p.deposit_ada}₳ deposit${p.status==='Executed'?' refunded':p.status==='Expired'?' forfeited':''}
+          </span>` : ''}
         </div>
       </div>
 
@@ -769,10 +772,12 @@ async function submitProposal() {
   const deadlineHours = parseFloat(document.getElementById('p-deadline-hours')?.value || 0);
   const timelockHours = parseFloat(document.getElementById('p-timelock-hours')?.value || 0);
   const quorum = parseInt(document.getElementById('p-quorum')?.value || 0);
+  const depositAda = parseFloat(document.getElementById('p-deposit-ada')?.value || 2);
 
   if (!description) return showProposalError('Description is required.');
   if (deadlineHours < 1) return showProposalError('Vote deadline must be at least 1 hour.');
   if (quorum < 1) return showProposalError('Quorum must be at least 1 pt.');
+  if (depositAda < 2) return showProposalError('Deposit must be at least 2 ADA.');
 
   const now = Date.now();
   const deadline_ms    = now + deadlineHours * 3_600_000;
@@ -785,6 +790,7 @@ async function submitProposal() {
     deadline_ms,
     execute_after_ms,
     quorum,
+    deposit_ada: depositAda,
   };
 
   if (_selectedActionType === 'TreasuryTransfer') {

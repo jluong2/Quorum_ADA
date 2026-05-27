@@ -148,22 +148,56 @@ class RegistryDatum:
 # ─── ProposalAction ───────────────────────────────────────
 
 @dataclass
+class NativeToken:
+    """Mirrors fos_types.NativeToken — a single native token component."""
+    policy_id: str   # 28-byte hex
+    asset_name: str  # hex or UTF-8 label
+    quantity: int
+
+    @classmethod
+    def from_cbor(cls, val) -> NativeToken:
+        f = _f(val)
+        return cls(
+            policy_id=bytes(f[0]).hex(),
+            asset_name=bytes(f[1]).hex(),
+            quantity=int(f[2]),
+        )
+
+    def asset_name_str(self) -> str:
+        """Try to decode asset_name as UTF-8; fall back to hex."""
+        try:
+            return bytes.fromhex(self.asset_name).decode("utf-8")
+        except Exception:
+            return self.asset_name
+
+    def __str__(self) -> str:
+        return f"{self.quantity} {self.asset_name_str()} ({self.policy_id[:8]}…)"
+
+
+@dataclass
 class TreasuryTransferAction:
     recipient: str   # hex
     lovelace: int
     memo: str
+    tokens: list[NativeToken] = field(default_factory=list)
 
     @classmethod
     def from_cbor_fields(cls, fields) -> TreasuryTransferAction:
+        tokens = (
+            [NativeToken.from_cbor(t) for t in fields[3]]
+            if len(fields) > 3 else []
+        )
         return cls(
             recipient=bytes(fields[0]).hex(),
             lovelace=int(fields[1]),
             memo=bytes(fields[2]).decode("utf-8", errors="replace"),
+            tokens=tokens,
         )
 
     def __str__(self) -> str:
         ada = self.lovelace / 1_000_000
-        return f"TreasuryTransfer → {self.recipient[:12]}… {ada:.2f}₳  memo={self.memo!r}"
+        tok = f" + {len(self.tokens)} token(s)" if self.tokens else ""
+        return f"TreasuryTransfer → {self.recipient[:12]}… {ada:.2f}₳{tok}  memo={self.memo!r}"
 
 
 @dataclass
@@ -294,6 +328,8 @@ class GovernanceDatum:
     quorum: int
     registry_ref: OutputReference
     registry_version: int
+    deposit: int = 0     # lovelace locked by proposer; refunded on Execute, forfeited on Expire
+    rationale_url: str = ""  # IPFS CID or URL (Python-only, stored in tx metadata not datum)
 
     @classmethod
     def from_cbor_hex(cls, hex_str: str) -> GovernanceDatum:
@@ -310,6 +346,7 @@ class GovernanceDatum:
             quorum=int(f[7]),
             registry_ref=OutputReference.from_cbor(f[8]),
             registry_version=int(f[9]),
+            deposit=int(f[10]) if len(f) > 10 else 0,
         )
 
     @property

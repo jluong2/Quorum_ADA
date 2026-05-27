@@ -55,6 +55,7 @@ Handles proposals and voting. Each proposal lives in its own UTxO and records:
 - An execute-after timestamp (the timelock)
 - A quorum threshold (weighted yes-score required to pass)
 - The registry version at creation time
+- A **deposit** (lovelace) locked by the proposer at creation — refunded to the proposer on Execute (quorum met), forfeited (stays locked in the governance UTxO) on Expire (deadline missed without quorum). Minimum deposit is 2 ADA, enforced on-chain by the `min_deposit` constant in `governance.ak`. Acts as an anti-spam mechanism: proposers have ADA at stake.
 
 **Actions that can be proposed:**
 
@@ -125,10 +126,10 @@ Three modules handle the full transaction lifecycle:
 
   | Builder | Action |
   |---|---|
-  | `build_create_proposal_tx` | Create a new governance proposal UTxO |
+  | `build_create_proposal_tx` | Create a new governance proposal UTxO; output holds `min_lovelace + deposit` |
   | `build_cast_vote_tx` | Append a yes/no vote to a proposal |
-  | `build_execute_proposal_tx` | Flip status `Voting → Executed` once quorum + timelock clear |
-  | `build_expire_proposal_tx` | Flip status `Voting → Expired` after deadline without quorum |
+  | `build_execute_proposal_tx` | Flip status `Voting → Executed` once quorum + timelock clear; refund `deposit` lovelace to proposer |
+  | `build_expire_proposal_tx` | Flip status `Voting → Expired` after deadline without quorum; deposit stays locked |
   | `build_execute_transfer_tx` | Spend treasury UTxO and pay the approved recipient |
   | `build_execute_registry_action_tx` | Apply a `RotateAdmin` or `UpdateRegistryMember` mutation via `GovernanceApproval` redeemer (constructor 4) — no admin key needed |
   | `build_set_delegate_tx` | Set or clear a member's vote delegate — self-service, signed by member, uses `SetDelegate` redeemer (constructor 5) |
@@ -167,7 +168,7 @@ A **New Proposal** button in the dashboard header opens a modal with four action
 - *Update Member* — target member (populated from live registry), new role, new status
 - *Rotate Admin* — new admin key hash
 
-Timeline fields (vote deadline hours, timelock hours) and quorum threshold are always shown; the quorum hint displays the maximum achievable score for the current registry. On submit the form calls `POST /api/propose`, which validates all inputs, constructs the `GovernanceDatum`, and returns an `UnsignedTransaction` routed through the same sign-and-submit flow as voting.
+Timeline fields (vote deadline hours, timelock hours), quorum threshold, and deposit amount (default 2 ADA, minimum 2 ADA) are always shown; the quorum hint displays the maximum achievable score for the current registry. On submit the form calls `POST /api/propose`, which validates all inputs, constructs the `GovernanceDatum`, and returns an `UnsignedTransaction` routed through the same sign-and-submit flow as voting.
 
 **Proposal card structure**
 
@@ -177,7 +178,7 @@ Each governance proposal is rendered as a structured card with four labeled sect
 |---|---|
 | **Action** | Type tag (e.g. `💸 Treasury Transfer`) + labeled detail rows — recipient, amount, memo for transfers; target key + new role/status for member updates |
 | **Timeline** | Vote deadline and execute-after (timelock) as formatted UTC dates, with "Xd Xh remaining" or "Deadline passed" and timelock status |
-| **Voting Progress** | Animated progress bar, quorum percentage badge, "X of Y pts required" legend |
+| **Voting Progress** | Animated progress bar, quorum percentage badge, "X of Y pts required" legend, deposit badge (🔒 locked / ↩ refunded / forfeited) |
 | **Votes Cast** | Voter chips showing truncated key hash, role (Admin/Treasurer/Member), and vote weight |
 
 The `/api/state` response enriches each proposal with `action_details` (structured per action type), `vote_deadline_fmt`, `execute_after_fmt`, `time_remaining`, and voter role/weight resolved from the registry.
@@ -329,6 +330,9 @@ The treasury datum stores the `governance_script_hash` — the hash of the compi
 | `governance_script_hash` cannot be changed after deployment | Immutability assertion in all `identity_registry.ak` redeemer paths |
 | Per-proposal ADA cap | `max_transfer_lovelace` in `TreasuryDatum` |
 | State cannot disappear from chain | Continuing output requirement in all three validators |
+| Proposal deposit preserved during voting | `CastVote` asserts `cont_lovelace >= in_lovelace` — no ADA drain during vote period |
+| Proposal deposit refunded on pass | `Execute` requires output to proposer ≥ deposit; continuing output ≥ `in_lovelace - deposit` |
+| Proposal deposit forfeited on expiry | `Expire` asserts `cont_lovelace >= in_lovelace` — full ADA including deposit stays locked |
 | Delegation is single-hop and self-service | `SetDelegate` redeemer checks `target.delegate == None`; signed by delegator only |
 | Delegated weight cannot be double-counted | `effective_vote_weight` excludes delegators who voted directly |
 | Agent decisions are auditable | Every action logged to `.fos_audit.jsonl` |

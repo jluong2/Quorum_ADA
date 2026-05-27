@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from .types import (
     GovernanceDatum,
+    NativeToken,
     OutputReference,
     ProposalAction,
     RegistryDatum,
@@ -43,7 +44,8 @@ from .types import (
 class TxOutput:
     address: str
     lovelace: int
-    datum_hex: Optional[str] = None   # inline datum for script outputs
+    datum_hex: Optional[str] = None          # inline datum for script outputs
+    tokens: list[NativeToken] = field(default_factory=list)  # native tokens alongside ADA
 
 
 @dataclass
@@ -242,6 +244,7 @@ def build_execute_proposal_tx(
     Execute a governance proposal that has reached quorum + timelock.
 
     Flips proposal status Voting → Executed.
+    Refunds the proposer's deposit in the same transaction.
     The treasury payment (if any) is a SEPARATE transaction built by
     build_execute_transfer_tx() after this one is confirmed.
     """
@@ -253,18 +256,27 @@ def build_execute_proposal_tx(
         if governance_script_hash
         else governance_utxo.ref.split("#")[0]
     )
+    deposit = governance_datum.deposit
+    continuing_lovelace = max(governance_utxo.lovelace - deposit, 1_500_000)
+
+    outputs = [
+        TxOutput(
+            address=gov_address,
+            lovelace=continuing_lovelace,
+            datum_hex=_governance_datum_hex(executed_datum),
+        ),
+    ]
+    if deposit > 0:
+        outputs.append(TxOutput(
+            address=_pkh_address(governance_datum.proposer, net),
+            lovelace=deposit,
+        ))
 
     return UnsignedTransaction(
         description=f"ExecuteProposal {governance_utxo.ref}",
         inputs=[governance_utxo.ref],
         reference_inputs=[registry_utxo.ref],
-        outputs=[
-            TxOutput(
-                address=gov_address,
-                lovelace=governance_utxo.lovelace,
-                datum_hex=_governance_datum_hex(executed_datum),
-            ),
-        ],
+        outputs=outputs,
         redeemers=[_execute_redeemer(governance_utxo.ref)],
         validity_start_ms=governance_datum.execute_after,
         required_signers=[],
@@ -454,6 +466,9 @@ def build_execute_registry_action_tx(
     )
 
 
+MIN_PROPOSAL_DEPOSIT = 2_000_000  # lovelace — must match min_deposit in governance.ak
+
+
 def build_create_proposal_tx(
     *,
     registry_utxo: UTxO,
@@ -467,16 +482,22 @@ def build_create_proposal_tx(
     governance_script_hash: str,
     current_time_ms: int,
     min_lovelace: int = 2_000_000,
+    deposit: int = 2_000_000,
 ) -> UnsignedTransaction:
     """
     Create a new governance proposal UTxO at the governance script address.
 
-    This is a plain send transaction — no script spending, no redeemers.
-    The proposer's wallet supplies the funding input; the signing layer adds it.
+    The proposer locks `deposit` lovelace in the governance UTxO. On Execute
+    (quorum met) the deposit is refunded to the proposer; on Expire (deadline
+    missed) it stays locked as a spam deterrent.
 
-    outputs: [new governance UTxO with initial GovernanceDatum]
+    outputs: [new governance UTxO with GovernanceDatum; holds min_lovelace + deposit]
     required_signers: [proposer_key_hash]
     """
+    if deposit < MIN_PROPOSAL_DEPOSIT:
+        raise ValueError(
+            f"Deposit {deposit} is below the minimum {MIN_PROPOSAL_DEPOSIT} lovelace"
+        )
     if vote_deadline_ms <= current_time_ms:
         raise ValueError("Vote deadline must be in the future")
     if execute_after_ms < vote_deadline_ms:
@@ -508,6 +529,7 @@ def build_create_proposal_tx(
         quorum=quorum,
         registry_ref=registry_utxo.as_output_reference(),
         registry_version=registry.version,
+        deposit=deposit,
     )
 
     net = _network_from_config()
@@ -520,7 +542,7 @@ def build_create_proposal_tx(
         outputs=[
             TxOutput(
                 address=gov_address,
-                lovelace=min_lovelace,
+                lovelace=min_lovelace + deposit,
                 datum_hex=_governance_datum_hex(gov_datum),
             ),
         ],

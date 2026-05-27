@@ -26,6 +26,7 @@ except ImportError:
 
 from .types import (
     GovernanceDatum,
+    NativeToken,
     OffChainDecisionAction,
     OutputReference,
     ProposalAction,
@@ -79,12 +80,22 @@ def _encode_vote(v: VoteRecord):
     ])
 
 
+def _encode_native_token(t: NativeToken):
+    return _constr(0, [
+        bytes.fromhex(t.policy_id),
+        t.asset_name.encode("utf-8") if not all(c in "0123456789abcdefABCDEF" for c in t.asset_name) or len(t.asset_name) % 2 != 0
+        else bytes.fromhex(t.asset_name),
+        t.quantity,
+    ])
+
+
 def _encode_action(a: ProposalAction):
     if isinstance(a, TreasuryTransferAction):
         return _constr(0, [
             bytes.fromhex(a.recipient),
             a.lovelace,
             a.memo.encode("utf-8"),
+            [_encode_native_token(t) for t in a.tokens],
         ])
     if isinstance(a, RotateAdminAction):
         return _constr(1, [bytes.fromhex(a.new_admin)])
@@ -124,6 +135,7 @@ def governance_datum_cbor_hex(d: GovernanceDatum) -> str:
         d.quorum,
         _encode_output_ref(d.registry_ref),
         d.registry_version,
+        d.deposit,
     ])
     return _encode(data).hex()
 

@@ -48,6 +48,16 @@ pub type RegistryDatum {
 
 // ─── Governance Layer ─────────────────────────────────────
 
+// A single Cardano native token component of a treasury transfer.
+// policy_id: 28-byte minting policy hash (hex)
+// asset_name: 0–32 bytes UTF-8 or hex label
+// quantity: number of tokens to transfer
+pub type NativeToken {
+  policy_id: ByteArray,
+  asset_name: ByteArray,
+  quantity: Int,
+}
+
 // Structured on-chain effect that executes when a proposal passes.
 // The treasury validator pattern-matches on TreasuryTransfer to release funds.
 // Future actions (AddMemberAction, etc.) let governance replace the
@@ -57,6 +67,8 @@ pub type ProposalAction {
     recipient: VerificationKeyHash,
     lovelace: Int,
     memo: ByteArray,
+    // Native tokens to transfer alongside the ADA.  Empty list = ADA-only.
+    tokens: List<NativeToken>,
   }
   RotateAdmin { new_admin: VerificationKeyHash }
   UpdateRegistryMember {
@@ -92,4 +104,8 @@ pub type GovernanceDatum {
   quorum: Int,
   registry_ref: OutputReference,
   registry_version: Int,
+  // ADA (lovelace) locked by the proposer at creation time.
+  // Refunded to the proposer when Execute succeeds; forfeited (stays locked)
+  // if the proposal expires without quorum.  Must be >= min_deposit in governance.ak.
+  deposit: Int,
 }

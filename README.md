@@ -15,6 +15,7 @@ Most governance tooling assumes a human is reading dashboards and clicking butto
 - Every decision (approved, rejected, skipped, anomaly) is written to an append-only audit log
 - In default mode it describes its intent and waits for human confirmation before submitting anything
 - **Liquid democracy**: members can delegate their voting weight to another member; delegators who vote directly override their own delegation
+- **Proposal deposits**: proposers lock ADA (minimum 2 ADA) when creating a proposal — refunded on pass, forfeited on expiry; deters spam without governance overhead
 - **Webhook alerts**: Discord/Slack notifications for new proposals, quorum reached, approaching deadlines, high-value transfers, and at-risk proposals (< 48 h, < 50% participation)
 - **Proposal history**: dashboard Active/History tab shows executed and expired proposals with full vote records
 

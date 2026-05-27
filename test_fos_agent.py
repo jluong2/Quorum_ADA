@@ -8,6 +8,7 @@ import json
 import sys
 import os
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -24,6 +25,7 @@ from fos_agent.chain import FOSState, BlockfrostClient
 from fos_agent.transactions import (
     build_cast_vote_tx, build_execute_proposal_tx,
     build_expire_proposal_tx, build_execute_transfer_tx,
+    build_create_proposal_tx,
     UnsignedTransaction,
 )
 
@@ -73,13 +75,13 @@ def make_proposal(
     votes=None, status=PROPOSAL_VOTING,
     quorum=4, vote_deadline=9_999_999_999_000,
     execute_after=0, registry_version=1,
-    action=None,
+    action=None, deposit=0,
 ):
     return GovernanceDatum(
-        proposer="cafe",
+        proposer="cafe" * 14,
         description="Test proposal",
         action=action or TreasuryTransferAction(
-            recipient="bb", lovelace=2_000_000, memo="salary"
+            recipient="bb" * 28, lovelace=2_000_000, memo="salary"
         ),
         votes=votes or [],
         status=status,
@@ -88,7 +90,10 @@ def make_proposal(
         quorum=quorum,
         registry_ref=make_ref(),
         registry_version=registry_version,
+        deposit=deposit,
     )
+
+make_governance_datum = make_proposal
 
 def make_treasury(gov_hash="deadbeef", max_transfer=5_000_000):
     return TreasuryDatum(
@@ -842,6 +847,186 @@ test("build_set_delegate_tx produces correct tx structure",        test_build_se
 test("build_set_delegate_tx clears delegation when None",          test_build_set_delegate_tx_clears_delegate)
 test("build_set_delegate_tx rejects self-delegation",              test_build_set_delegate_tx_rejects_self_delegation)
 test("build_set_delegate_tx rejects delegation chains",            test_build_set_delegate_tx_rejects_chain)
+
+
+# ════════════════════════════════════════════════════════
+# Section 12 — Proposal deposits
+# ════════════════════════════════════════════════════════
+
+print("\n── 12. Proposal deposits ─────────────────────────")
+
+from fos_agent.transactions import MIN_PROPOSAL_DEPOSIT
+
+def _make_proposal_registry():
+    """Registry with one Admin member — enough for quorum=1 tests."""
+    return make_registry(make_member("aa" * 28, ROLE_ADMIN, STATUS_ACTIVE))
+
+def test_create_proposal_default_deposit():
+    reg = _make_proposal_registry()
+    utxo = make_utxo("reg_tx", 0, 2_000_000)
+    gov_hash = "cc" * 28
+    tx = build_create_proposal_tx(
+        registry_utxo=utxo,
+        registry=reg,
+        proposer_key_hash="aa" * 28,
+        description="Test proposal",
+        action=OffChainDecisionAction(memo="test"),
+        vote_deadline_ms=int(time.time() * 1000) + 3_600_000,
+        execute_after_ms=int(time.time() * 1000) + 7_200_000,
+        quorum=1,
+        governance_script_hash=gov_hash,
+        current_time_ms=int(time.time() * 1000),
+    )
+    ok(tx is not None)
+    # Output lovelace = min_lovelace (2 ADA) + default deposit (2 ADA)
+    ok(tx.outputs[0].lovelace == 4_000_000)
+
+def test_create_proposal_custom_deposit():
+    reg = _make_proposal_registry()
+    utxo = make_utxo("reg_tx", 0, 2_000_000)
+    gov_hash = "cc" * 28
+    tx = build_create_proposal_tx(
+        registry_utxo=utxo,
+        registry=reg,
+        proposer_key_hash="aa" * 28,
+        description="High deposit",
+        action=OffChainDecisionAction(memo="big"),
+        vote_deadline_ms=int(time.time() * 1000) + 3_600_000,
+        execute_after_ms=int(time.time() * 1000) + 7_200_000,
+        quorum=1,
+        governance_script_hash=gov_hash,
+        current_time_ms=int(time.time() * 1000),
+        deposit=5_000_000,
+    )
+    ok(tx.outputs[0].lovelace == 7_000_000)  # 2 min + 5 deposit
+
+def test_create_proposal_deposit_stored_in_datum():
+    reg = _make_proposal_registry()
+    utxo = make_utxo("ab" * 32, 0, 2_000_000)   # hex tx_hash for valid CBOR encoding
+    gov_hash = "cc" * 28
+    tx = build_create_proposal_tx(
+        registry_utxo=utxo,
+        registry=reg,
+        proposer_key_hash="aa" * 28,
+        description="Deposit datum test",
+        action=OffChainDecisionAction(memo="memo"),
+        vote_deadline_ms=int(time.time() * 1000) + 3_600_000,
+        execute_after_ms=int(time.time() * 1000) + 7_200_000,
+        quorum=1,
+        governance_script_hash=gov_hash,
+        current_time_ms=int(time.time() * 1000),
+        deposit=3_000_000,
+    )
+    datum_hex = tx.outputs[0].datum_hex
+    ok(datum_hex is not None and datum_hex != "<governance_datum_cbor_hex>")
+    recovered = GovernanceDatum.from_cbor_hex(datum_hex)
+    ok(recovered.deposit == 3_000_000)
+
+def test_create_proposal_deposit_below_minimum_raises():
+    reg = make_registry()
+    utxo = make_utxo("reg_tx", 0, 2_000_000)
+    try:
+        build_create_proposal_tx(
+            registry_utxo=utxo,
+            registry=reg,
+            proposer_key_hash="aa" * 28,
+            description="Cheap proposal",
+            action=OffChainDecisionAction(memo="spam"),
+            vote_deadline_ms=int(time.time() * 1000) + 3_600_000,
+            execute_after_ms=int(time.time() * 1000) + 7_200_000,
+            quorum=1,
+            governance_script_hash="cc" * 28,
+            current_time_ms=int(time.time() * 1000),
+            deposit=500_000,
+        )
+        ok(False, "should have raised ValueError")
+    except ValueError as e:
+        ok("minimum" in str(e).lower() or "deposit" in str(e).lower())
+
+def test_execute_proposal_refunds_deposit():
+    gov_datum = make_governance_datum(deposit=3_000_000)
+    gov_utxo = make_utxo("gov_tx", 0, 5_000_000)
+    reg_utxo = make_utxo("reg_tx", 0, 2_000_000)
+    tx = build_execute_proposal_tx(
+        governance_utxo=gov_utxo,
+        governance_datum=gov_datum,
+        registry_utxo=reg_utxo,
+        change_address="addr_test1v" + "aa" * 28,
+        current_time_ms=int(time.time() * 1000),
+    )
+    ok(len(tx.outputs) == 2)
+    refund_outputs = [o for o in tx.outputs if o.lovelace == 3_000_000]
+    ok(len(refund_outputs) == 1)
+
+def test_execute_proposal_continuing_output_reduced():
+    gov_datum = make_governance_datum(deposit=2_000_000)
+    gov_utxo = make_utxo("gov_tx", 0, 4_000_000)
+    reg_utxo = make_utxo("reg_tx", 0, 2_000_000)
+    tx = build_execute_proposal_tx(
+        governance_utxo=gov_utxo,
+        governance_datum=gov_datum,
+        registry_utxo=reg_utxo,
+        change_address="addr_test1v" + "aa" * 28,
+        current_time_ms=int(time.time() * 1000),
+    )
+    gov_continuing = tx.outputs[0]
+    ok(gov_continuing.lovelace == 2_000_000)
+
+def test_execute_proposal_no_refund_when_no_deposit():
+    gov_datum = make_governance_datum(deposit=0)
+    gov_utxo = make_utxo("gov_tx", 0, 2_000_000)
+    reg_utxo = make_utxo("reg_tx", 0, 2_000_000)
+    tx = build_execute_proposal_tx(
+        governance_utxo=gov_utxo,
+        governance_datum=gov_datum,
+        registry_utxo=reg_utxo,
+        change_address="addr_test1v" + "aa" * 28,
+        current_time_ms=int(time.time() * 1000),
+    )
+    ok(len(tx.outputs) == 1)
+
+def test_expire_proposal_keeps_full_lovelace():
+    gov_datum = make_governance_datum(status=PROPOSAL_VOTING, deposit=2_000_000)
+    gov_utxo = make_utxo("gov_tx", 0, 4_000_000)
+    reg_utxo = make_utxo("reg_tx", 0, 2_000_000)
+    tx = build_expire_proposal_tx(
+        governance_utxo=gov_utxo,
+        governance_datum=gov_datum,
+        registry_utxo=reg_utxo,
+        change_address="addr_test1v" + "aa" * 28,
+        current_time_ms=int(time.time() * 1000) + 999_999_999,
+    )
+    ok(len(tx.outputs) == 1)
+    ok(tx.outputs[0].lovelace == 4_000_000)
+
+def test_min_proposal_deposit_constant():
+    ok(MIN_PROPOSAL_DEPOSIT == 2_000_000)
+
+def test_governance_datum_deposit_roundtrip():
+    d = make_governance_datum(deposit=5_000_000)
+    from fos_agent.datums import governance_datum_cbor_hex
+    hex_str = governance_datum_cbor_hex(d)
+    recovered = GovernanceDatum.from_cbor_hex(hex_str)
+    ok(recovered.deposit == 5_000_000)
+
+def test_governance_datum_zero_deposit_roundtrip():
+    d = make_governance_datum(deposit=0)
+    from fos_agent.datums import governance_datum_cbor_hex
+    hex_str = governance_datum_cbor_hex(d)
+    recovered = GovernanceDatum.from_cbor_hex(hex_str)
+    ok(recovered.deposit == 0)
+
+test("build_create_proposal_tx output includes deposit + min_lovelace",  test_create_proposal_default_deposit)
+test("build_create_proposal_tx respects custom deposit",                  test_create_proposal_custom_deposit)
+test("build_create_proposal_tx stores deposit in datum",                  test_create_proposal_deposit_stored_in_datum)
+test("build_create_proposal_tx rejects deposit below 2 ADA minimum",     test_create_proposal_deposit_below_minimum_raises)
+test("build_execute_proposal_tx adds proposer refund output",             test_execute_proposal_refunds_deposit)
+test("build_execute_proposal_tx reduces continuing output by deposit",    test_execute_proposal_continuing_output_reduced)
+test("build_execute_proposal_tx omits refund when deposit=0",             test_execute_proposal_no_refund_when_no_deposit)
+test("build_expire_proposal_tx preserves full lovelace (deposit locked)", test_expire_proposal_keeps_full_lovelace)
+test("MIN_PROPOSAL_DEPOSIT constant equals 2 ADA",                       test_min_proposal_deposit_constant)
+test("GovernanceDatum deposit round-trips through CBOR (non-zero)",      test_governance_datum_deposit_roundtrip)
+test("GovernanceDatum deposit round-trips through CBOR (zero)",          test_governance_datum_zero_deposit_roundtrip)
 
 
 # ─── Results ──────────────────────────────────────────────

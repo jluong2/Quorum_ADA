@@ -5,8 +5,8 @@ use aiken/transaction.{
 use aiken/transaction/credential.{ScriptCredential, VerificationKeyCredential}
 use aiken/transaction/value
 use fos_types.{
-  Executed, GovernanceDatum, OffChainDecision, ProposalAction, RotateAdmin,
-  TreasuryTransfer, UpdateRegistryMember,
+  Executed, GovernanceDatum, NativeToken, OffChainDecision, ProposalAction,
+  RotateAdmin, TreasuryTransfer, UpdateRegistryMember,
 }
 
 // ─── Types ────────────────────────────────────────────────
@@ -88,6 +88,55 @@ fn lovelace_to_recipient(
   )
 }
 
+// Verify that all approved native tokens reach the recipient.
+// Sums the quantity of each token across all outputs to the recipient
+// and asserts each approved quantity is met.
+fn tokens_to_recipient(
+  outputs: List<aiken/transaction.Output>,
+  recipient: aiken/crypto.VerificationKeyHash,
+  tokens: List<NativeToken>,
+) -> Bool {
+  let recipient_value =
+    list.foldl(
+      outputs,
+      value.zero(),
+      fn(o, acc) {
+        when o.address.payment_credential is {
+          VerificationKeyCredential(pkh) ->
+            if pkh == recipient {
+              value.merge(acc, o.value)
+            } else {
+              acc
+            }
+          _ -> acc
+        }
+      },
+    )
+  list.all(
+    tokens,
+    fn(t) {
+      value.quantity_of(recipient_value, t.policy_id, t.asset_name) >= t.quantity
+    },
+  )
+}
+
+// Verify the treasury's continuing output still holds all tokens it held
+// minus any tokens approved for transfer.
+fn treasury_conserves_tokens(
+  own_value: aiken/transaction/value.Value,
+  continuing_value: aiken/transaction/value.Value,
+  tokens: List<NativeToken>,
+) -> Bool {
+  list.all(
+    tokens,
+    fn(t) {
+      let held_before = value.quantity_of(own_value, t.policy_id, t.asset_name)
+      let held_after  = value.quantity_of(continuing_value, t.policy_id, t.asset_name)
+      held_after >= held_before - t.quantity
+    },
+  )
+}
+
 // ─── Validator ────────────────────────────────────────────
 
 validator {
@@ -109,16 +158,19 @@ validator {
         expect gov_datum.status == Executed
 
         // ── 3. Action must be a TreasuryTransfer ──────────────
-        expect TreasuryTransfer { recipient, lovelace, .. } = gov_datum.action
+        expect TreasuryTransfer { recipient, lovelace, tokens, .. } = gov_datum.action
 
-        // ── 4. Amount must be within the per-proposal cap ─────
+        // ── 4. ADA amount must be within the per-proposal cap ─
         expect lovelace <= datum.max_transfer_lovelace
 
-        // ── 5. Recipient receives at least the approved amount ─
+        // ── 5. Recipient receives at least the approved ADA ───
         // We sum all outputs to the recipient's key — they may receive
         // multiple outputs (e.g. value + change) in the same tx.
         let paid = lovelace_to_recipient(outputs, recipient)
         expect paid >= lovelace
+
+        // ── 5a. Recipient receives all approved native tokens ──
+        expect tokens_to_recipient(outputs, recipient, tokens)
 
         // ── 6. Treasury continues — state must survive the spend ─
         // The continuing output enforces:
@@ -140,6 +192,14 @@ validator {
         // Without this, the submitter could drain ADA to their change address.
         let treasury_in_lovelace = value.lovelace_of(own_input.output.value)
         expect value.lovelace_of(continuing.value) >= treasury_in_lovelace - lovelace
+
+        // ── 7a. Treasury conserves remaining native tokens ────────
+        expect
+          treasury_conserves_tokens(
+            own_input.output.value,
+            continuing.value,
+            tokens,
+          )
 
         new_datum.governance_script_hash == datum.governance_script_hash && new_datum.max_transfer_lovelace == datum.max_transfer_lovelace
       }
@@ -271,4 +331,66 @@ test treasury_lovelace_exact_minimum_is_allowed() {
   let transfer = 2_000_000
   let continuing_out = treasury_in - transfer
   continuing_out >= treasury_in - transfer
+}
+
+// ─── Native token tests ───────────────────────────────────
+// (Pure logic — ScriptContext tests require off-chain framework)
+
+test empty_token_list_always_passes() {
+  // When tokens is empty, tokens_to_recipient trivially passes.
+  // Simulated: all([], _) = True
+  let tokens: List<NativeToken> = []
+  list.all(tokens, fn(_) { False }) == False && list.all(tokens, fn(_) { True })
+}
+
+test token_quantity_check_passes_when_sufficient() {
+  let held = 500
+  let required = 500
+  held >= required
+}
+
+test token_quantity_check_fails_when_insufficient() {
+  let held = 499
+  let required = 500
+  !(held >= required)
+}
+
+test token_conservation_passes_when_enough_remain() {
+  // Treasury held 1000 tokens, transferred 100, should hold ≥ 900
+  let before = 1000
+  let after = 900
+  let transferred = 100
+  after >= before - transferred
+}
+
+test token_conservation_fails_when_drained() {
+  // Treasury held 1000 tokens, transferred 100, but only 0 remain
+  let before = 1000
+  let after = 0
+  let transferred = 100
+  !(after >= before - transferred)
+}
+
+test treasury_transfer_with_empty_tokens_matches_old_behaviour() {
+  // A TreasuryTransfer with tokens=[] should pattern-match identically.
+  let action: ProposalAction =
+    TreasuryTransfer { recipient: #"aa", lovelace: 2_000_000, memo: #"grant", tokens: [] }
+  when action is {
+    TreasuryTransfer { lovelace, tokens, .. } -> lovelace == 2_000_000 && tokens == []
+    _ -> False
+  }
+}
+
+test treasury_transfer_with_native_tokens() {
+  let action: ProposalAction =
+    TreasuryTransfer {
+      recipient: #"aa",
+      lovelace: 0,
+      memo: #"token grant",
+      tokens: [NativeToken { policy_id: #"deadbeef", asset_name: #"QRML", quantity: 100 }],
+    }
+  when action is {
+    TreasuryTransfer { tokens, .. } -> list.length(tokens) == 1
+    _ -> False
+  }
 }

@@ -593,6 +593,16 @@ body {
 .ql-met     { color: var(--green); font-weight: 600; }
 .ql-pending { color: var(--text-3); }
 .ql-score   { color: var(--text-3); font-family: var(--mono); }
+.deposit-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.deposit-badge.locked   { background: rgba(255,200,50,.12); color: #c8952a; }
+.deposit-badge.refunded { background: rgba(80,200,120,.12); color: var(--green); }
+.deposit-badge.forfeited{ background: rgba(200,80,80,.12);  color: #c85050; }
 
 /* Enhanced vote chips */
 .votes-wrap-v2 { display: flex; flex-wrap: wrap; gap: 7px; }

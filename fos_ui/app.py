@@ -193,6 +193,8 @@ def _state_to_dict(s: FOSState) -> dict:
                 f"{gov.action.lovelace / 1_000_000:.2f}"
                 if is_transfer else None
             ),
+            "deposit": gov.deposit,
+            "deposit_ada": f"{gov.deposit / 1_000_000:.2f}" if gov.deposit else None,
             "lovelace": utxo.lovelace,
         })
 
@@ -267,6 +269,8 @@ def api_propose():
     deadline_ms   = int(body.get("deadline_ms", 0))
     exec_after_ms = int(body.get("execute_after_ms", 0))
     quorum        = int(body.get("quorum", 0))
+    deposit_ada   = float(body.get("deposit_ada", 2.0))
+    deposit_lovelace = max(round(deposit_ada * 1_000_000), 2_000_000)
     proposer      = body.get("proposer_key_hash", "") or config.FOS_AGENT_KEY_HASH or "00" * 28
 
     if not description:
@@ -321,6 +325,7 @@ def api_propose():
             quorum=quorum,
             governance_script_hash=config.GOVERNANCE_SCRIPT_HASH,
             current_time_ms=s.current_time_ms,
+            deposit=deposit_lovelace,
         )
         return jsonify({
             "ok": True,
