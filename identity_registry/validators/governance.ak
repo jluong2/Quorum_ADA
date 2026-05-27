@@ -163,7 +163,12 @@ validator {
         new_datum.status == Executed && new_datum.votes == datum.votes
           && new_datum.action == datum.action
           && new_datum.proposer == datum.proposer
+          && new_datum.description == datum.description
           && new_datum.quorum == datum.quorum
+          && new_datum.execute_after == datum.execute_after
+          && new_datum.vote_deadline == datum.vote_deadline
+          && new_datum.registry_ref == datum.registry_ref
+          && new_datum.registry_version == datum.registry_version
       }
 
       Expire -> {
@@ -182,6 +187,12 @@ validator {
         new_datum.status == Expired && new_datum.votes == datum.votes
           && new_datum.action == datum.action
           && new_datum.proposer == datum.proposer
+          && new_datum.description == datum.description
+          && new_datum.quorum == datum.quorum
+          && new_datum.execute_after == datum.execute_after
+          && new_datum.vote_deadline == datum.vote_deadline
+          && new_datum.registry_ref == datum.registry_ref
+          && new_datum.registry_version == datum.registry_version
       }
     }
   }

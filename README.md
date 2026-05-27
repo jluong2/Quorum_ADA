@@ -92,6 +92,8 @@ Three Aiken validators, each holding one UTxO of on-chain state:
 - `RegistryDatum.governance_script_hash` is immutable after deployment. The registry validator rejects any datum that attempts to change it, preventing governance from being rewired post-deploy.
 - GovernanceApproval is replay-proof. A governance proposal can only mutate the registry version it was voted on; once the version increments, the same proposal reference fails the version check.
 - Treasury authenticates governance by script hash. A fake "Executed" UTxO at an arbitrary address cannot drain funds.
+- Treasury conserves ADA. The continuing treasury output must hold at least `treasury_in - approved_transfer` lovelace — the submitter cannot drain remaining ADA to their change address.
+- Governance datum fields are fully locked in Execute and Expire paths. All nine immutable fields (`proposer`, `description`, `action`, `votes`, `quorum`, `execute_after`, `vote_deadline`, `registry_ref`, `registry_version`) are checked on the continuing output — no field can be silently mutated during status transitions.
 - Suspended members lose voting weight retroactively. `count_weighted_yes` checks `status == Active` at execution time, not at vote-cast time.
 - Every validator requires a continuing output — state can never disappear from the chain.
 
@@ -128,7 +130,7 @@ In default mode the agent builds `UnsignedTransaction` descriptors and waits for
 Flask app with CIP-30 wallet integration (Eternl, Nami, Lace, VESPR). The server never holds a private key — all signing happens in the browser wallet.
 
 ```bash
-python3 fos_ui/app.py          # mock mode → http://localhost:5000
+python3 fos_ui/app.py          # mock mode → http://127.0.0.1:5000
 
 # Live mode
 export BLOCKFROST_PROJECT_ID="preprod..."
@@ -137,6 +139,8 @@ export FOS_GOVERNANCE_SCRIPT_HASH="..."
 export FOS_TREASURY_SCRIPT_HASH="..."
 python3 fos_ui/app.py
 ```
+
+Dashboard security defaults: binds to `127.0.0.1` (loopback only), debug mode off, CSRF Origin check on all mutating routes. Override with `HOST=0.0.0.0` and `FLASK_DEBUG=1` if needed.
 
 ---
 

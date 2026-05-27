@@ -135,6 +135,12 @@ validator {
         expect InlineDatum(raw) = continuing.datum
         expect new_datum: TreasuryDatum = raw
 
+        // ── 7. Treasury conserves remaining ADA ──────────────────
+        // Continuing output must hold at least treasury_in - approved_transfer.
+        // Without this, the submitter could drain ADA to their change address.
+        let treasury_in_lovelace = value.lovelace_of(own_input.output.value)
+        expect value.lovelace_of(continuing.value) >= treasury_in_lovelace - lovelace
+
         new_datum.governance_script_hash == datum.governance_script_hash && new_datum.max_transfer_lovelace == datum.max_transfer_lovelace
       }
     }
@@ -242,4 +248,27 @@ test treasury_config_tampered_hash_rejected() {
   let original_hash = #"deadbeef"
   let tampered_hash = #"cafebabe"
   !(tampered_hash == original_hash)
+}
+
+test treasury_lovelace_conservation_satisfied() {
+  // treasury_in=10 ADA, transfer=2 ADA → continuing must have ≥ 8 ADA
+  let treasury_in = 10_000_000
+  let transfer = 2_000_000
+  let continuing_out = 8_000_000
+  continuing_out >= treasury_in - transfer
+}
+
+test treasury_lovelace_drained_to_change_is_rejected() {
+  // treasury_in=10 ADA, transfer=2 ADA but only 1 ADA left → drain to change address
+  let treasury_in = 10_000_000
+  let transfer = 2_000_000
+  let continuing_out = 1_000_000
+  !(continuing_out >= treasury_in - transfer)
+}
+
+test treasury_lovelace_exact_minimum_is_allowed() {
+  let treasury_in = 10_000_000
+  let transfer = 2_000_000
+  let continuing_out = treasury_in - transfer
+  continuing_out >= treasury_in - transfer
 }

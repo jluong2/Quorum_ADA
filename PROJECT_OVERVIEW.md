@@ -72,6 +72,7 @@ Holds the organisation's ADA. The treasury UTxO can only be spent when:
 3. The recipient and amount match exactly what the proposal specifies
 4. The transfer amount does not exceed the per-proposal cap in `TreasuryDatum`
 5. The governance script hash in `TreasuryDatum` matches the actual governance script (preventing a fake "Executed" UTxO from draining funds)
+6. The continuing treasury output holds at least `treasury_in - approved_transfer` lovelace (preventing the submitter from draining remaining ADA to their change address)
 
 ### 2.2 Operator Agent — `fos_agent/`
 
@@ -80,14 +81,15 @@ A Claude AI-powered Python agent that watches the chain and acts on pending gove
 - **One-shot**: called once, reads state, acts, exits
 - **Continuous monitor**: polls every N seconds in a loop
 
-The agent has six enforced safety rules baked into its system prompt:
+The agent has seven enforced safety rules baked into its system prompt:
 
 1. Only vote Yes on `TreasuryTransfer` if the amount is within the configured cap and the recipient is an Active member
 2. Never vote or execute if `registry.version != proposal.registry_version`
 3. Only call Execute if the timelock has cleared and quorum is met
 4. Only trigger a treasury transfer after the Execute transaction is confirmed on-chain
-5. Write every decision (approved, rejected, skipped, anomaly) to an audit log
-6. In non-autonomous mode, describe intent and wait for human confirmation
+5. Only call `execute_registry_action` after the Execute transaction is confirmed; action must be `RotateAdmin` or `UpdateRegistryMember`
+6. Write every decision (approved, rejected, skipped, anomaly) to an audit log
+7. In non-autonomous mode, describe intent and wait for human confirmation
 
 Every action the agent considers produces an `UnsignedTransaction` descriptor — a structured specification of inputs, outputs, redeemers, and validity range — that is passed to the signing layer separately. The agent never holds a private key.
 

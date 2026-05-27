@@ -222,6 +222,22 @@ def _state_to_dict(s: FOSState) -> dict:
     }
 
 
+# ─── CSRF protection ─────────────────────────────────────
+
+@app.before_request
+def _csrf_check():
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return
+    origin = request.headers.get("Origin", "")
+    if not origin:
+        return  # same-origin form posts don't send Origin
+    host_header = request.headers.get("Host", "")
+    # Strip scheme from origin for comparison
+    origin_host = origin.split("://", 1)[-1].rstrip("/")
+    if origin_host != host_header:
+        return jsonify({"ok": False, "error": "CSRF check failed"}), 403
+
+
 # ─── Routes ───────────────────────────────────────────────
 
 @app.route("/")
@@ -498,8 +514,9 @@ def _find_proposal(s: FOSState, ref: str) -> tuple[UTxO, GovernanceDatum]:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    debug = os.environ.get("FLASK_DEBUG", "1") == "1"
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    host = os.environ.get("HOST", "127.0.0.1")
     if not config.is_configured():
         print("⚠  Running in mock mode (set BLOCKFROST_PROJECT_ID + script hashes for live chain)")
-    print(f"🌐  Quorum Dashboard → http://localhost:{port}")
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    print(f"🌐  Quorum Dashboard → http://{host}:{port}")
+    app.run(host=host, port=port, debug=debug)

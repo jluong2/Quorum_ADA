@@ -158,6 +158,10 @@ All cross-validator types live here. The most important:
 
 **`governance_script_hash` is immutable in `RegistryDatum`.** All registry mutation paths assert `new_datum.governance_script_hash == datum.governance_script_hash`. Once set at deployment, the governance link cannot be rewired without redeploying.
 
+**Treasury conserves ADA.** The continuing treasury output must hold at least `treasury_in_lovelace - lovelace` after a transfer. Without this check, the tx submitter could drain the remaining balance to their change address.
+
+**Governance datum fields are fully locked in Execute and Expire.** Both status-transition paths assert all nine immutable fields (`proposer`, `description`, `action`, `votes`, `quorum`, `execute_after`, `vote_deadline`, `registry_ref`, `registry_version`) are unchanged on the continuing output. Only `status` may change.
+
 **Continuing output required on every spend.** All three validators require exactly one output returning to the same script address with an unchanged (or correctly mutated) datum. State can never disappear from the chain.
 
 **Observers cannot vote.** `vote_weight(Observer) == 0`. The `CastVote` branch asserts `vote_weight(reg_member.role) > 0` before appending a vote.
@@ -288,9 +292,12 @@ python3 scripts/deploy.py             # deploys + prints env vars
 Flask dashboard that reads live chain state and lets a human operator build unsigned transactions.
 
 ```bash
-python3 fos_ui/app.py     # → http://localhost:5000
+python3 fos_ui/app.py     # → http://127.0.0.1:5000
 PORT=8080 python3 fos_ui/app.py
+HOST=0.0.0.0 python3 fos_ui/app.py   # expose to LAN
 ```
+
+Security defaults: binds to `127.0.0.1` (loopback), debug off, CSRF Origin check on all mutating routes. Set `HOST=0.0.0.0` to expose to LAN; set `FLASK_DEBUG=1` for development.
 
 Routes:
 - `GET  /`             — dashboard HTML
@@ -302,6 +309,15 @@ Routes:
 - `GET  /api/audit`    — last 50 audit log entries
 
 The UI builds the transaction descriptor and shows the summary.  The operator copies it to their wallet (Eternl, Nami, or `cardano-cli`) for final signing and submission — the web server never holds a private key.
+
+### Executor agent (`fos_agent/executor.py`)
+
+When a proposal reaches `Executed` status, `run_executor()` launches a second Claude agent that interprets the mandate and carries it out (post a Discord message, compile a contract, create a GitHub issue, etc.).
+
+**Security hardening:**
+- **Prompt injection guard**: `description` and `memo` fields from on-chain data are wrapped in `<user-submitted-content>` XML tags in the instruction and flagged as untrusted. The system prompt explicitly instructs Claude to refuse override attempts and log them as anomalies.
+- **Path traversal**: `_write_file`, `_read_file`, and `_list_directory` call `_resolve_safe()` which checks `target.relative_to(repo_root)` before acting. Any `../` escape returns `{"success": false, "error": "Path traversal blocked"}`.
+- **SSRF**: `_http_request` validates the URL via `_is_safe_url()` — requires `https` scheme and blocks all private/loopback IP ranges (`127.*`, `10.*`, `192.168.*`, `169.254.*`, `localhost`, etc.).
 
 ### Adding a new Quorum validator
 

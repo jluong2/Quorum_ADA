@@ -503,8 +503,8 @@ class FOSAgent:
                 for a in u.get("amount", [])
                 if a["unit"] == "lovelace"
             )
-            # Rough change = wallet balance - fee estimate
-            change_lovelace = max(0, agent_lovelace - 600_000)
+            # Rough change = wallet balance - fee estimate (Plutus tx can cost 1-2 ADA)
+            change_lovelace = max(0, agent_lovelace - 2_000_000)
 
             signed_cbor = build_signed_transaction(
                 unsigned_tx=unsigned_tx,
