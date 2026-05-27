@@ -31,8 +31,9 @@ TREASURY_SCRIPT_HASH   = os.environ.get("FOS_TREASURY_SCRIPT_HASH",   "")
 # The agent operates as a registered FOS member.
 # SIGNING_KEY is the hex-encoded private key — keep it in a secret manager.
 
-FOS_AGENT_KEY_HASH   = os.environ.get("FOS_AGENT_KEY_HASH",   "")
+FOS_AGENT_KEY_HASH    = os.environ.get("FOS_AGENT_KEY_HASH",    "")
 FOS_AGENT_SIGNING_KEY = os.environ.get("FOS_AGENT_SIGNING_KEY", "")
+FOS_COLLATERAL_REF    = os.environ.get("FOS_COLLATERAL_REF",    "")  # "txhash#index"
 
 # ─── Safety Limits ────────────────────────────────────────
 # The agent will never autonomously approve a transfer larger than this,

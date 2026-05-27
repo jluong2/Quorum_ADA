@@ -327,7 +327,10 @@ class FOSAgent:
             current_time_ms=self._state.current_time_ms,
             governance_script_hash=config.GOVERNANCE_SCRIPT_HASH,
         )
-        return json.dumps({"success": True, "transaction": tx.summary()})
+        result = {"success": True, "transaction": tx.summary()}
+        if config.AUTONOMOUS_MODE:
+            result["submission"] = self._sign_and_submit(tx)
+        return json.dumps(result)
 
     def _execute_proposal(self, proposal_ref: str, reasoning: str) -> str:
         assert self._state, "Call read_fos_state first"
@@ -340,7 +343,10 @@ class FOSAgent:
             current_time_ms=self._state.current_time_ms,
             governance_script_hash=config.GOVERNANCE_SCRIPT_HASH,
         )
-        return json.dumps({"success": True, "transaction": tx.summary()})
+        result = {"success": True, "transaction": tx.summary()}
+        if config.AUTONOMOUS_MODE:
+            result["submission"] = self._sign_and_submit(tx)
+        return json.dumps(result)
 
     def _expire_proposal(self, proposal_ref: str, reasoning: str) -> str:
         assert self._state, "Call read_fos_state first"
@@ -353,7 +359,10 @@ class FOSAgent:
             current_time_ms=self._state.current_time_ms,
             governance_script_hash=config.GOVERNANCE_SCRIPT_HASH,
         )
-        return json.dumps({"success": True, "transaction": tx.summary()})
+        result = {"success": True, "transaction": tx.summary()}
+        if config.AUTONOMOUS_MODE:
+            result["submission"] = self._sign_and_submit(tx)
+        return json.dumps(result)
 
     def _execute_treasury_transfer(self, governance_ref: str, reasoning: str) -> str:
         assert self._state, "Call read_fos_state first"
@@ -367,7 +376,10 @@ class FOSAgent:
             change_address="",
             treasury_script_hash=config.TREASURY_SCRIPT_HASH,
         )
-        return json.dumps({"success": True, "transaction": tx.summary()})
+        result = {"success": True, "transaction": tx.summary()}
+        if config.AUTONOMOUS_MODE:
+            result["submission"] = self._sign_and_submit(tx)
+        return json.dumps(result)
 
     def _write_audit_log(self, event: str, details: str, proposal_ref: str = "") -> str:
         entry = {
@@ -388,6 +400,72 @@ class FOSAgent:
             if utxo.ref == ref:
                 return utxo, gov
         raise ValueError(f"Proposal not found: {ref}")
+
+    def _sign_and_submit(self, unsigned_tx: UnsignedTransaction) -> dict:
+        """
+        Sign an UnsignedTransaction and submit it to the chain.
+
+        Only called when AUTONOMOUS_MODE=True and all signing prerequisites
+        are configured (signing key, collateral ref, agent address).
+
+        Returns a dict with tx_hash on success, or error on failure.
+        """
+        if not config.FOS_AGENT_SIGNING_KEY:
+            return {"submitted": False, "reason": "FOS_AGENT_SIGNING_KEY not set"}
+        if not config.FOS_COLLATERAL_REF:
+            return {"submitted": False, "reason": "FOS_COLLATERAL_REF not set"}
+
+        try:
+            from .signing import (
+                build_signed_transaction,
+                pkh_to_enterprise_address,
+                script_hash_to_address,
+            )
+            import json as _json, os as _os
+            from pathlib import Path as _Path
+
+            # Load plutus scripts from plutus.json
+            plutus_path = _Path(__file__).parent.parent / "identity_registry" / "plutus.json"
+            plutus_scripts_hex = []
+            if plutus_path.exists():
+                data = _json.loads(plutus_path.read_text())
+                plutus_scripts_hex = [
+                    v["compiledCode"] for v in data.get("validators", [])
+                    if "mock" not in v.get("compiledCode", "")
+                ]
+
+            agent_address = pkh_to_enterprise_address(
+                config.FOS_AGENT_KEY_HASH, config.NETWORK
+            )
+
+            # Fetch agent wallet UTxOs to calculate change
+            agent_utxos = self._bf._get(f"addresses/{agent_address}/utxos")
+            agent_lovelace = sum(
+                int(a["quantity"])
+                for u in (agent_utxos if isinstance(agent_utxos, list) else [])
+                for a in u.get("amount", [])
+                if a["unit"] == "lovelace"
+            )
+            # Rough change = wallet balance - fee estimate
+            change_lovelace = max(0, agent_lovelace - 600_000)
+
+            signed_cbor = build_signed_transaction(
+                unsigned_tx=unsigned_tx,
+                signing_key_hex=config.FOS_AGENT_SIGNING_KEY,
+                plutus_scripts_hex=plutus_scripts_hex,
+                collateral_ref=config.FOS_COLLATERAL_REF,
+                change_address=agent_address,
+                change_lovelace=change_lovelace,
+                blockfrost_url=config.BLOCKFROST_URL,
+                project_id=config.BLOCKFROST_PROJECT_ID,
+                network=config.NETWORK,
+            )
+
+            tx_hash = self._bf.submit_tx(signed_cbor)
+            return {"submitted": True, "tx_hash": tx_hash}
+
+        except Exception as e:
+            return {"submitted": False, "error": str(e)}
 
 
 # ─── Agent Loop ───────────────────────────────────────────
