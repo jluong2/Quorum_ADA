@@ -360,7 +360,7 @@ This prevents an attack where an attacker votes to transfer ADA, then waits for 
 
 ### 4.6 Script Hash Authentication
 
-The treasury datum stores the `governance_script_hash` — the hash of the compiled governance validator. When a treasury transfer is executed, the treasury validator checks that the governance UTxO's address matches `ScriptCredential(governance_script_hash)`. This ensures a fake UTxO at an arbitrary address claiming status `Executed` cannot be used to drain the treasury.
+The treasury datum stores the `governance_script_hash` — the hash of the compiled governance validator. When a treasury transfer is executed, the treasury validator checks that the governance UTxO's address matches `Script(governance_script_hash)` (the Plutus V3 `Credential` constructor from `cardano/address`). This ensures a fake UTxO at an arbitrary address claiming status `Executed` cannot be used to drain the treasury.
 
 ---
 

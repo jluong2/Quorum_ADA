@@ -84,6 +84,8 @@ python3 scripts/verify.py             # publish to chain (requires DEPLOY_* env 
 
 ### Aiken Quorum contracts
 
+Contracts target **Plutus V3** using Aiken 1.1.22 and stdlib v3.1.0. The compiled output is `identity_registry/plutus.json`.
+
 ```bash
 cd identity_registry
 
@@ -98,6 +100,40 @@ PATH="/path/to/files:$PATH" aiken test
 ```
 
 The `aiken` file at the repo root is a mock Python binary used by `test_agent.py`. It simulates `new/check/build/test` and is placed on `PATH` during test runs. Tests whose names contain "fail" are made to fail by the mock; all others pass.
+
+**Stdlib v3 import paths** (differs from older Aiken tutorials):
+
+| V2 (stdlib v2) | V3 (stdlib v3, current) |
+|---|---|
+| `use aiken/list` | `use aiken/collection/list` |
+| `use aiken/transaction.{...}` | `use cardano/transaction.{...}` |
+| `use aiken/transaction/credential.{ScriptCredential, VerificationKeyCredential}` | `use cardano/address.{Script, VerificationKey}` |
+| `use aiken/transaction/value` | `use cardano/assets` |
+| `value.zero()` | `assets.zero` (constant, no parens) |
+| `value.lovelace_of(v)` | `assets.lovelace_of(v)` |
+
+**Plutus V3 validator syntax** (all four validators follow this pattern):
+
+```aiken
+validator my_validator_name {
+  spend(
+    datum: Option<MyDatum>,
+    redeemer: MyRedeemer,
+    own_ref: OutputReference,
+    self: Transaction,
+  ) -> Bool {
+    expect Some(datum) = datum
+    let Transaction { inputs, outputs, extra_signatories, .. } = self
+    // own_ref replaces ctx.purpose / find_input(inputs, own_ref)
+    // self replaces ctx.transaction
+    ...
+  }
+
+  else(_) { fail }
+}
+```
+
+Key differences from V2: `ScriptContext` is gone; `own_ref: OutputReference` and `self: Transaction` are direct parameters; datum is wrapped in `Option<>`; every named validator needs an `else(_) { fail }` catch-all.
 
 ---
 
@@ -171,7 +207,7 @@ All cross-validator types live here. The most important:
 
 **Every registry mutation increments `version`.** Governance proposals pin `registry_version` at creation. `load_registry()` in governance.ak asserts `registry.version == expected_version` — a registry update made after a proposal was created will cause that proposal's vote/execute transactions to fail.
 
-**Treasury authenticates governance by script hash.** `TreasuryDatum.governance_script_hash` is checked against the `payment_credential` of the governance reference input via `ScriptCredential(hash)`. Without this, a fake "Executed" UTxO at a random address could drain the treasury.
+**Treasury authenticates governance by script hash.** `TreasuryDatum.governance_script_hash` is checked against the `payment_credential` of the governance reference input via `Script(hash)` (Plutus V3 credential constructor). Without this, a fake "Executed" UTxO at a random address could drain the treasury.
 
 **Registry authenticates governance by script hash.** `RegistryDatum.governance_script_hash` is checked identically in the `GovernanceApproval` redeemer path. A fake "Executed" UTxO cannot mutate the membership list or rotate the admin key.
 
@@ -392,8 +428,8 @@ When a proposal reaches `Executed` status, `run_executor()` launches a second Cl
 ### Adding a new Quorum validator
 
 1. Add any new shared types to `lib/fos_types.ak`.
-2. Create `validators/new_layer.ak`, importing from `fos_types`.
-3. If it reads another layer's state, use a reference input pattern (see `load_governance()` in `treasury.ak` or `load_registry()` in `governance.ak`).
+2. Create `validators/new_layer.ak` using Plutus V3 syntax (`validator name { spend(datum: Option<T>, redeemer, own_ref: OutputReference, self: Transaction) -> Bool { ... } else(_) { fail } }`). Import from `cardano/transaction`, `cardano/address`, `cardano/assets`, `aiken/collection/list`.
+3. If it reads another layer's state, use a reference input pattern — pass `self.reference_inputs` directly to a helper function (see `load_governance()` in `treasury.ak` or `load_registry()` in `governance.ak`).
 4. Add the new `ProposalAction` variant to `fos_types.ak` if governance needs to trigger it. Update `parse_proposal_action()` in `fos_agent/types.py` and `_encode_action()` in `fos_agent/datums.py`.
 5. If the treasury funds the new validator, add a new `TreasuryRedeemer` variant to `treasury.ak` (see `CreateVestingSchedule` as the pattern).
 6. Add Python mirrors to `fos_agent/types.py`, CBOR serializers to `fos_agent/datums.py`, and transaction builders to `fos_agent/transactions.py`.
