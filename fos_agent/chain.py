@@ -20,6 +20,7 @@ except ImportError:
     _REQUESTS_AVAILABLE = False
 
 from .types import (
+    CreateVestingAction,
     GovernanceDatum,
     NativeToken,
     OutputReference,
@@ -27,6 +28,8 @@ from .types import (
     RegistryMember,
     TreasuryDatum,
     UTxO,
+    VestingDatum,
+    VestingTranche,
     VoteRecord,
     PROPOSAL_VOTING,
     PROPOSAL_EXECUTED,
@@ -46,6 +49,19 @@ class FOSState:
     treasury_utxo: UTxO
     treasury_datum: TreasuryDatum
     current_time_ms: int   # POSIX milliseconds
+    vesting_utxos: list[tuple[UTxO, VestingDatum]] = None  # (utxo, parsed datum)
+
+    def __post_init__(self):
+        if self.vesting_utxos is None:
+            self.vesting_utxos = []
+
+    @property
+    def claimable_vesting(self) -> list[tuple[UTxO, VestingDatum]]:
+        """Vesting UTxOs where at least one tranche has matured."""
+        return [
+            (u, d) for u, d in self.vesting_utxos
+            if d.matured_tranches(self.current_time_ms)
+        ]
 
     @property
     def active_proposals(self) -> list[tuple[UTxO, GovernanceDatum]]:
@@ -186,6 +202,7 @@ def read_fos_state(
     registry_script_hash: str,
     governance_script_hash: str,
     treasury_script_hash: str,
+    vesting_script_hash: str = "",
 ) -> FOSState:
     """
     Read and parse the current state of all three FOS validators.
@@ -214,6 +231,16 @@ def read_fos_state(
     treas_datum = TreasuryDatum.from_cbor_hex(treas_utxo.datum_hex)
     treas_utxo.datum = treas_datum
 
+    # ── Vesting (optional — only if vesting script hash is set) ──
+    vesting_utxos = []
+    if vesting_script_hash:
+        vest_utxos = client.get_utxos_at_script(vesting_script_hash)
+        for utxo in vest_utxos:
+            if utxo.datum_hex:
+                vest_datum = VestingDatum.from_cbor_hex(utxo.datum_hex)
+                utxo.datum = vest_datum
+                vesting_utxos.append((utxo, vest_datum))
+
     return FOSState(
         registry=registry,
         registry_utxo=reg_utxo,
@@ -221,6 +248,7 @@ def read_fos_state(
         treasury_utxo=treas_utxo,
         treasury_datum=treas_datum,
         current_time_ms=int(time.time() * 1000),
+        vesting_utxos=vesting_utxos,
     )
 
 
@@ -362,6 +390,27 @@ def mock_fos_state() -> FOSState:
     )
     treas_utxo.datum = treas_datum
 
+    # ── Vesting ───────────────────────────────────────────
+    # A mock vesting schedule: 3 ADA in three monthly tranches.
+    # First tranche already matured (past), rest are future.
+    vest_ref = OutputReference(tx_hash="gov3tx0" + "0" * 57, output_index=0)
+    vest_datum = VestingDatum(
+        recipient="c3d4e5f6" * 7,
+        tranches=[
+            VestingTranche(release_time=now - 30 * 86400000, lovelace=1_000_000),  # matured
+            VestingTranche(release_time=now + 30 * 86400000, lovelace=1_000_000),  # future
+            VestingTranche(release_time=now + 60 * 86400000, lovelace=1_000_000),  # future
+        ],
+        proposal_ref=vest_ref,
+    )
+    vest_utxo = UTxO(
+        tx_hash="vest0tx0" + "0" * 56,
+        output_index=0,
+        lovelace=3_000_000,
+        datum_hex="",
+    )
+    vest_utxo.datum = vest_datum
+
     return FOSState(
         registry=registry,
         registry_utxo=reg_utxo,
@@ -369,4 +418,5 @@ def mock_fos_state() -> FOSState:
         treasury_utxo=treas_utxo,
         treasury_datum=treas_datum,
         current_time_ms=now,
+        vesting_utxos=[(vest_utxo, vest_datum)],
     )

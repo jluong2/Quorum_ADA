@@ -26,6 +26,7 @@ BLOCKFROST_URL = BLOCKFROST_URLS.get(NETWORK, BLOCKFROST_URLS["preprod"])
 REGISTRY_SCRIPT_HASH   = os.environ.get("FOS_REGISTRY_SCRIPT_HASH",   "")
 GOVERNANCE_SCRIPT_HASH = os.environ.get("FOS_GOVERNANCE_SCRIPT_HASH", "")
 TREASURY_SCRIPT_HASH   = os.environ.get("FOS_TREASURY_SCRIPT_HASH",   "")
+VESTING_SCRIPT_HASH    = os.environ.get("FOS_VESTING_SCRIPT_HASH",    "")
 
 # ─── Agent Identity ───────────────────────────────────────
 # The agent operates as a registered FOS member.

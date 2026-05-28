@@ -25,6 +25,7 @@ except ImportError:
     _CBOR_AVAILABLE = False
 
 from .types import (
+    CreateVestingAction,
     GovernanceDatum,
     NativeToken,
     OffChainDecisionAction,
@@ -36,6 +37,8 @@ from .types import (
     TreasuryDatum,
     TreasuryTransferAction,
     UpdateRegistryMemberAction,
+    VestingDatum,
+    VestingTranche,
     VoteRecord,
 )
 
@@ -89,6 +92,10 @@ def _encode_native_token(t: NativeToken):
     ])
 
 
+def _encode_vesting_tranche(t: VestingTranche):
+    return _constr(0, [t.release_time, t.lovelace])
+
+
 def _encode_action(a: ProposalAction):
     if isinstance(a, TreasuryTransferAction):
         return _constr(0, [
@@ -105,8 +112,15 @@ def _encode_action(a: ProposalAction):
             _constr(a.new_role, []),
             _constr(a.new_status, []),
         ])
-    # OffChainDecisionAction
-    return _constr(3, [a.memo.encode("utf-8")])
+    if isinstance(a, OffChainDecisionAction):
+        return _constr(3, [a.memo.encode("utf-8")])
+    # CreateVestingAction (constructor 4)
+    assert isinstance(a, CreateVestingAction)
+    return _constr(4, [
+        bytes.fromhex(a.recipient),
+        [_encode_vesting_tranche(t) for t in a.tranches],
+        a.memo.encode("utf-8"),
+    ])
 
 
 # ─── Public serializers ───────────────────────────────────
@@ -145,5 +159,15 @@ def treasury_datum_cbor_hex(d: TreasuryDatum) -> str:
     data = _constr(0, [
         bytes.fromhex(d.governance_script_hash),
         d.max_transfer_lovelace,
+    ])
+    return _encode(data).hex()
+
+
+def vesting_datum_cbor_hex(d: VestingDatum) -> str:
+    """Serialize a VestingDatum to inline datum CBOR hex."""
+    data = _constr(0, [
+        bytes.fromhex(d.recipient),
+        [_encode_vesting_tranche(t) for t in d.tranches],
+        _encode_output_ref(d.proposal_ref),
     ])
     return _encode(data).hex()

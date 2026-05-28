@@ -1379,3 +1379,8 @@ details[open] .tx-raw summary::before { content: '▼ '; }
 .proposal-card.history:hover {
   opacity: 1;
 }
+
+/* ── Vesting schedule section ────────────────────────────── */
+.vesting-section {
+  margin-top: 0;
+}

@@ -245,12 +245,81 @@ class OffChainDecisionAction:
         return f"OffChainDecision: {self.memo!r}"
 
 
+# ─── VestingTranche ───────────────────────────────────────
+
+@dataclass
+class VestingTranche:
+    release_time: int  # POSIX ms
+    lovelace: int
+
+    @classmethod
+    def from_cbor(cls, val) -> VestingTranche:
+        f = _f(val)
+        return cls(release_time=int(f[0]), lovelace=int(f[1]))
+
+    def __str__(self) -> str:
+        from datetime import datetime, timezone
+        dt = datetime.fromtimestamp(self.release_time / 1000, tz=timezone.utc)
+        return f"{self.lovelace / 1_000_000:.2f}₳ at {dt.strftime('%Y-%m-%d %H:%M UTC')}"
+
+
+@dataclass
+class CreateVestingAction:
+    recipient: str   # hex
+    tranches: list[VestingTranche]
+    memo: str
+
+    @classmethod
+    def from_cbor_fields(cls, fields) -> CreateVestingAction:
+        return cls(
+            recipient=bytes(fields[0]).hex(),
+            tranches=[VestingTranche.from_cbor(t) for t in fields[1]],
+            memo=bytes(fields[2]).decode("utf-8", errors="replace"),
+        )
+
+    def total_lovelace(self) -> int:
+        return sum(t.lovelace for t in self.tranches)
+
+    def __str__(self) -> str:
+        total = self.total_lovelace() / 1_000_000
+        return f"CreateVesting → {self.recipient[:12]}… {total:.2f}₳ in {len(self.tranches)} tranche(s)  memo={self.memo!r}"
+
+
 ProposalAction = Union[
     TreasuryTransferAction,
     RotateAdminAction,
     UpdateRegistryMemberAction,
     OffChainDecisionAction,
+    CreateVestingAction,
 ]
+
+
+# ─── VestingDatum ─────────────────────────────────────────
+
+@dataclass
+class VestingDatum:
+    recipient: str                 # hex VerificationKeyHash
+    tranches: list[VestingTranche]
+    proposal_ref: OutputReference  # audit link back to the governance proposal
+
+    @classmethod
+    def from_cbor_hex(cls, hex_str: str) -> VestingDatum:
+        data = _decode(hex_str)
+        f = _f(data)
+        return cls(
+            recipient=bytes(f[0]).hex(),
+            tranches=[VestingTranche.from_cbor(t) for t in f[1]],
+            proposal_ref=OutputReference.from_cbor(f[2]),
+        )
+
+    def matured_tranches(self, current_time_ms: int) -> list[VestingTranche]:
+        return [t for t in self.tranches if t.release_time <= current_time_ms]
+
+    def remaining_tranches(self, current_time_ms: int) -> list[VestingTranche]:
+        return [t for t in self.tranches if t.release_time > current_time_ms]
+
+    def claimable_lovelace(self, current_time_ms: int) -> int:
+        return sum(t.lovelace for t in self.matured_tranches(current_time_ms))
 
 # Mirrors governance.ak: high_value_lovelace constant
 SUPERMAJORITY_HIGH_VALUE_LOVELACE = 10_000_000
@@ -274,8 +343,10 @@ def parse_proposal_action(val) -> ProposalAction:
         return RotateAdminAction.from_cbor_fields(f)
     elif alt == 2:
         return UpdateRegistryMemberAction.from_cbor_fields(f)
-    else:
+    elif alt == 3:
         return OffChainDecisionAction.from_cbor_fields(f)
+    else:  # alt == 4
+        return CreateVestingAction.from_cbor_fields(f)
 
 
 # ─── VoteRecord ───────────────────────────────────────────

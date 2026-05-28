@@ -83,6 +83,9 @@ function render(d) {
   setText('proposals-meta', meta);
   renderProposals(d.governance.proposals, d);
   updateQuorumHint();
+
+  // Vesting
+  renderVesting(d.vesting || {});
 }
 
 // ── Registry ───────────────────────────────────────────────
@@ -153,6 +156,7 @@ function proposalCard(p, d, extraClass = '') {
     RotateAdminAction:             '🔑',
     UpdateRegistryMemberAction:    '👤',
     OffChainDecisionAction:        '📋',
+    CreateVestingAction:           '⏱',
   };
   const icon = actionIcons[p.action_type] || '📄';
   const ad = p.action_details || {};
@@ -206,6 +210,27 @@ function proposalCard(p, d, extraClass = '') {
         <span class="detail-key">Decision Memo</span>
         <span class="detail-val">${escHtml(ad.memo||'—')}</span>
       </div>`;
+  } else if (p.action_type === 'CreateVestingAction') {
+    const trancheRows = (ad.tranches || []).map((t, i) => `
+      <div class="detail-row">
+        <span class="detail-key">Tranche ${i+1}</span>
+        <span class="detail-val">${escHtml(t.ada)} ₳ — unlocks ${escHtml(t.release_fmt)}</span>
+      </div>`
+    ).join('');
+    actionRows = `
+      <div class="detail-row">
+        <span class="detail-key">Recipient</span>
+        <span class="detail-val mono" title="${escHtml(ad.recipient||'')}">${escHtml(ad.recipient_short||'—')}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-key">Total</span>
+        <span class="detail-val amount">${escHtml(ad.total_ada||'—')} ₳ in ${escHtml(String(ad.tranche_count||0))} tranche(s)</span>
+      </div>
+      ${trancheRows}
+      <div class="detail-row">
+        <span class="detail-key">Memo</span>
+        <span class="detail-val">${escHtml(ad.memo||'—')}</span>
+      </div>`;
   }
 
   // ── Timeline ────────────────────────────────────────────
@@ -244,6 +269,8 @@ function proposalCard(p, d, extraClass = '') {
   }
   if (p.status === 'Executed' && p.is_transfer)
     btns += `<button class="btn btn-transfer" onclick="doTransfer('${p.ref}')">💸 Release Funds</button>`;
+  if (p.status === 'Executed' && p.action_type === 'CreateVestingAction')
+    btns += `<button class="btn btn-transfer" onclick="doFundVesting('${p.ref}')">⏱ Fund Vesting</button>`;
   if (p.status === 'Executed')
     btns += `<button class="btn btn-executor" onclick="doRunExecutor('${p.ref}')">⚡ Run Task</button>`;
 
@@ -338,6 +365,16 @@ async function doTransfer(ref) {
   if (!confirm('Release treasury funds for this proposal?\nConfirm the amount in the transaction details.')) return;
   await buildAndShowTx('/api/transfer', { governance_ref: ref }, 'Release Treasury Funds', ref);
 }
+async function doFundVesting(ref) {
+  if (!confirm('Fund vesting schedule from treasury?\nConfirm the schedule details in the transaction.')) return;
+  const vstHash = prompt('Enter vesting script hash (or leave blank if set in env):') || '';
+  await buildAndShowTx('/api/vesting/fund', { governance_ref: ref, vesting_script_hash: vstHash }, 'Fund Vesting Schedule', ref);
+}
+async function doClaimVesting(ref) {
+  if (!confirm('Claim matured vesting tranches?')) return;
+  const addr = prompt('Enter your recipient address (bech32):') || '';
+  await buildAndShowTx('/api/vesting/claim', { vesting_ref: ref, recipient_address: addr }, 'Claim Vested Funds', ref);
+}
 
 async function doRunExecutor(ref) {
   const modal = document.getElementById('executor-modal');
@@ -364,6 +401,54 @@ async function doRunExecutor(ref) {
   } catch (e) {
     body.innerHTML = `<div class="exec-error">⚠ ${escHtml(e.message)}</div>`;
   }
+}
+
+// ── Vesting ────────────────────────────────────────────────
+function renderVesting(v) {
+  const section = document.getElementById('vesting-section');
+  const grid    = document.getElementById('vesting-grid');
+  const meta    = document.getElementById('vesting-meta');
+  if (!section || !grid) return;
+
+  const schedules = v.schedules || [];
+  if (!schedules.length) {
+    section.classList.add('hidden');
+    return;
+  }
+
+  section.classList.remove('hidden');
+  if (meta) meta.textContent = `${schedules.length} schedule(s) · ${v.claimable_count} claimable`;
+
+  grid.innerHTML = schedules.map(s => {
+    const trancheRows = (s.tranches || []).map((t, i) => `
+      <div class="detail-row">
+        <span class="detail-key ${t.matured ? 'amount' : 'muted'}">Tranche ${i+1}</span>
+        <span class="detail-val">${escHtml(t.ada)} ₳ — ${escHtml(t.release_fmt)}${t.matured ? ' <span class="form-hint" style="color:var(--green)">(matured)</span>' : ''}</span>
+      </div>`).join('');
+
+    return `
+      <div class="proposal-card">
+        <div class="prop-header">
+          <div class="prop-header-left">
+            <div class="prop-ref">${escHtml(s.ref_short)}</div>
+            <div class="prop-title">Vesting → ${escHtml(s.recipient_short)}</div>
+          </div>
+          <span class="status-badge ${s.has_claimable ? 'voting' : 'executed'}">${s.has_claimable ? 'Claimable' : 'Locked'}</span>
+        </div>
+        <div class="prop-section">
+          <div class="prop-section-label">Tranches</div>
+          <div class="detail-grid">${trancheRows}</div>
+        </div>
+        <div class="prop-section">
+          <div class="prop-section-label-row">
+            <span class="prop-section-label">Balance</span>
+            <span class="quorum-pct-badge${s.has_claimable ? ' met' : ''}">${escHtml(s.total_ada)} ₳</span>
+          </div>
+          ${s.has_claimable ? `<div class="quorum-legend"><span class="ql-met">↓ ${escHtml(s.claimable_ada)} ₳ claimable now</span></div>` : ''}
+        </div>
+        ${s.has_claimable ? `<div class="prop-actions"><button class="btn btn-execute" onclick="doClaimVesting('${escHtml(s.ref)}')">↓ Claim ${escHtml(s.claimable_ada)} ₳</button></div>` : ''}
+      </div>`;
+  }).join('');
 }
 
 // ── Delegation ─────────────────────────────────────────────
@@ -771,7 +856,61 @@ function renderActionFields() {
         <input type="text" id="p-new-admin" class="form-input"
                placeholder="hex verification key hash of new admin…" maxlength="64">
       </div>`;
+
+  } else if (_selectedActionType === 'CreateVesting') {
+    const memberOptions = members.map(m =>
+      `<option value="${escHtml(m.key_hash)}">${escHtml(m.key_hash_short)} (${escHtml(m.role)})</option>`
+    ).join('');
+    el.innerHTML = `
+      <div class="form-section-title">Vesting Schedule</div>
+      <div class="form-group">
+        <label class="form-label" for="p-vest-recipient">Recipient Key Hash</label>
+        ${members.length ? `
+        <select class="form-input" onchange="document.getElementById('p-vest-recipient').value = this.value">
+          <option value="">— Select member or enter manually —</option>
+          ${memberOptions}
+        </select>` : ''}
+        <input type="text" id="p-vest-recipient" class="form-input"
+               placeholder="hex verification key hash…" maxlength="64">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tranches <span class="form-hint">each tranche releases on its date</span></label>
+        <div id="tranche-list"></div>
+        <button type="button" class="btn btn-ghost small" onclick="addTrancheRow()">+ Add Tranche</button>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="p-vest-memo">Memo</label>
+        <input type="text" id="p-vest-memo" class="form-input"
+               placeholder="Purpose of this vesting schedule…" maxlength="100">
+      </div>`;
   }
+}
+
+function addTrancheRow() {
+  const list = document.getElementById('tranche-list');
+  if (!list) return;
+  const row = document.createElement('div');
+  row.className = 'token-row form-row';
+  const defaultDate = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+  row.innerHTML = `
+    <div class="form-group" style="flex:1.5">
+      <input type="date" class="form-input tranche-date" value="${defaultDate}" title="Release date (UTC midnight)">
+    </div>
+    <div class="form-group" style="flex:1">
+      <input type="number" class="form-input tranche-ada" placeholder="ADA amount" min="1" step="0.1">
+    </div>
+    <button type="button" class="btn btn-ghost small" onclick="this.closest('.token-row').remove()" style="align-self:flex-end;margin-bottom:4px">✕</button>
+  `;
+  list.appendChild(row);
+}
+
+function collectTranches() {
+  return Array.from(document.querySelectorAll('.tranche-date')).map((el, i) => {
+    const adaEl = el.closest('.token-row').querySelector('.tranche-ada');
+    const dateMs = new Date(el.value + 'T00:00:00Z').getTime();
+    const ada = parseFloat(adaEl?.value || '0');
+    return { release_time_ms: dateMs, ada };
+  }).filter(t => t.release_time_ms && t.ada > 0);
 }
 
 function addTokenRow() {
@@ -860,6 +999,12 @@ async function submitProposal() {
   } else if (_selectedActionType === 'RotateAdmin') {
     payload.new_admin = document.getElementById('p-new-admin')?.value.trim();
     if (!payload.new_admin) return showProposalError('New admin key hash is required.');
+  } else if (_selectedActionType === 'CreateVesting') {
+    payload.recipient = document.getElementById('p-vest-recipient')?.value.trim();
+    payload.memo      = document.getElementById('p-vest-memo')?.value.trim();
+    payload.tranches  = collectTranches();
+    if (!payload.recipient) return showProposalError('Recipient key hash is required.');
+    if (!payload.tranches.length) return showProposalError('At least one tranche is required.');
   }
 
   btn.disabled = true;

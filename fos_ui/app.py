@@ -29,13 +29,16 @@ from fos_agent.chain import BlockfrostClient, FOSState, mock_fos_state, read_fos
 from fos_agent.executor import run_executor
 from fos_agent.transactions import (
     build_cast_vote_tx,
+    build_claim_vesting_tx,
     build_create_proposal_tx,
+    build_create_vesting_tx,
     build_execute_proposal_tx,
     build_expire_proposal_tx,
     build_execute_transfer_tx,
     build_set_delegate_tx,
 )
 from fos_agent.types import (
+    CreateVestingAction,
     GovernanceDatum,
     NativeToken,
     RegistryDatum,
@@ -45,6 +48,8 @@ from fos_agent.types import (
     UpdateRegistryMemberAction,
     OffChainDecisionAction,
     UTxO,
+    VestingDatum,
+    VestingTranche,
     ROLE_NAMES,
     STATUS_NAMES,
     PROPOSAL_STATUS_NAMES,
@@ -117,6 +122,20 @@ def _action_details(action) -> dict:
     if isinstance(action, OffChainDecisionAction):
         return {
             "type": "Off-Chain Decision",
+            "memo": action.memo or "—",
+        }
+    if isinstance(action, CreateVestingAction):
+        return {
+            "type": "Create Vesting",
+            "recipient": action.recipient,
+            "recipient_short": action.recipient[:12] + "…" + action.recipient[-8:],
+            "total_ada": f"{action.total_lovelace() / 1_000_000:.2f}",
+            "tranche_count": len(action.tranches),
+            "tranches": [
+                {"release_time_ms": t.release_time, "lovelace": t.lovelace,
+                 "ada": f"{t.lovelace / 1_000_000:.2f}", "release_fmt": _fmt_ms(t.release_time)}
+                for t in action.tranches
+            ],
             "memo": action.memo or "—",
         }
     return {"type": type(action).__name__}
@@ -213,6 +232,32 @@ def _state_to_dict(s: FOSState) -> dict:
             "lovelace": utxo.lovelace,
         })
 
+    vesting_schedules = [
+        {
+            "ref": utxo.ref,
+            "ref_short": utxo.ref[:20] + "…",
+            "recipient": d.recipient,
+            "recipient_short": d.recipient[:12] + "…" + d.recipient[-8:],
+            "total_lovelace": utxo.lovelace,
+            "total_ada": f"{utxo.lovelace / 1_000_000:.2f}",
+            "proposal_ref": str(d.proposal_ref),
+            "tranches": [
+                {
+                    "release_time_ms": t.release_time,
+                    "release_fmt": _fmt_ms(t.release_time),
+                    "lovelace": t.lovelace,
+                    "ada": f"{t.lovelace / 1_000_000:.2f}",
+                    "matured": t.release_time <= s.current_time_ms,
+                }
+                for t in d.tranches
+            ],
+            "claimable_lovelace": d.claimable_lovelace(s.current_time_ms),
+            "claimable_ada": f"{d.claimable_lovelace(s.current_time_ms) / 1_000_000:.2f}",
+            "has_claimable": bool(d.matured_tranches(s.current_time_ms)),
+        }
+        for utxo, d in s.vesting_utxos
+    ]
+
     return {
         "current_time_ms": s.current_time_ms,
         "network": config.NETWORK,
@@ -238,6 +283,11 @@ def _state_to_dict(s: FOSState) -> dict:
             "max_transfer_lovelace": s.treasury_datum.max_transfer_lovelace,
             "max_transfer_ada": f"{s.treasury_datum.max_transfer_lovelace / 1_000_000:.2f}",
             "governance_script_hash": s.treasury_datum.governance_script_hash[:16] + "…",
+        },
+        "vesting": {
+            "total": len(s.vesting_utxos),
+            "claimable_count": len(s.claimable_vesting),
+            "schedules": vesting_schedules,
         },
     }
 
@@ -325,6 +375,23 @@ def api_propose():
             )
         elif action_type == "RotateAdmin":
             action = RotateAdminAction(new_admin=body.get("new_admin", "").strip())
+        elif action_type == "CreateVesting":
+            raw_tranches = body.get("tranches", [])
+            tranches = [
+                VestingTranche(
+                    release_time=int(t["release_time_ms"]),
+                    lovelace=round(float(t.get("ada", 0)) * 1_000_000),
+                )
+                for t in raw_tranches
+                if t.get("release_time_ms") and t.get("ada")
+            ]
+            if not tranches:
+                return jsonify({"ok": False, "error": "CreateVesting requires at least one tranche"}), 400
+            action = CreateVestingAction(
+                recipient=body.get("recipient", "").strip(),
+                tranches=tranches,
+                memo=body.get("memo", "").strip(),
+            )
         else:
             return jsonify({"ok": False, "error": f"Unknown action_type: {action_type}"}), 400
     except (ValueError, TypeError) as e:
@@ -485,6 +552,57 @@ def api_transfer():
         return jsonify({"ok": False, "error": str(e)}), 400
 
 
+@app.route("/api/vesting/fund", methods=["POST"])
+def api_vesting_fund():
+    """Build a create-vesting-schedule UnsignedTransaction (funds from treasury)."""
+    body = request.json or {}
+    governance_ref = body.get("governance_ref", "")
+    vesting_script_hash = body.get("vesting_script_hash", "") or config.VESTING_SCRIPT_HASH
+
+    if not vesting_script_hash:
+        return jsonify({"ok": False, "error": "vesting_script_hash required"}), 400
+
+    try:
+        s = _get_state()
+        utxo, gov = _find_proposal(s, governance_ref)
+        tx = build_create_vesting_tx(
+            treasury_utxo=s.treasury_utxo,
+            treasury_datum=s.treasury_datum,
+            governance_utxo=utxo,
+            governance_datum=gov,
+            vesting_script_hash=vesting_script_hash,
+            treasury_script_hash=config.TREASURY_SCRIPT_HASH,
+        )
+        return jsonify({"ok": True, "summary": tx.summary(), "inputs": tx.inputs})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/vesting/claim", methods=["POST"])
+def api_vesting_claim():
+    """Build a claim-vested UnsignedTransaction for a vesting UTxO."""
+    body = request.json or {}
+    vesting_ref = body.get("vesting_ref", "")
+    recipient_address = body.get("recipient_address", "")
+
+    if not vesting_ref:
+        return jsonify({"ok": False, "error": "vesting_ref required"}), 400
+
+    try:
+        s = _get_state()
+        utxo, vest = _find_vesting(s, vesting_ref)
+        tx = build_claim_vesting_tx(
+            vesting_utxo=utxo,
+            vesting_datum=vest,
+            recipient_address=recipient_address or f"addr_test1v{vest.recipient[:20]}",
+            current_time_ms=s.current_time_ms,
+            vesting_script_hash=config.VESTING_SCRIPT_HASH,
+        )
+        return jsonify({"ok": True, "summary": tx.summary(), "inputs": tx.inputs})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
 @app.route("/api/executor/run", methods=["POST"])
 def api_executor_run():
     """
@@ -607,6 +725,13 @@ def _find_proposal(s: FOSState, ref: str) -> tuple[UTxO, GovernanceDatum]:
         if utxo.ref == ref:
             return utxo, gov
     raise ValueError(f"Proposal not found: {ref}")
+
+
+def _find_vesting(s: FOSState, ref: str) -> tuple[UTxO, VestingDatum]:
+    for utxo, vest in s.vesting_utxos:
+        if utxo.ref == ref:
+            return utxo, vest
+    raise ValueError(f"Vesting UTxO not found: {ref}")
 
 
 # ─── Entry point ──────────────────────────────────────────

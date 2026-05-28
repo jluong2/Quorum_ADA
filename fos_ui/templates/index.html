@@ -166,6 +166,15 @@
         <div class="skeleton-card"></div>
         <div class="skeleton-card"></div>
       </div>
+
+      <!-- Vesting schedules panel -->
+      <div id="vesting-section" class="vesting-section hidden">
+        <div class="content-header" style="margin-top:32px">
+          <h2 class="content-title">Vesting Schedules</h2>
+          <div class="content-meta" id="vesting-meta"></div>
+        </div>
+        <div id="vesting-grid" class="proposals-grid"></div>
+      </div>
     </main>
 
   </div>
@@ -245,6 +254,7 @@
             <button class="action-type-btn"        data-action="OffChainDecision"   onclick="selectActionType('OffChainDecision')">   <span class="at-icon">📋</span><span class="at-name">Off-Chain Decision</span>    </button>
             <button class="action-type-btn"        data-action="UpdateRegistryMember" onclick="selectActionType('UpdateRegistryMember')"><span class="at-icon">👤</span><span class="at-name">Update Member</span>         </button>
             <button class="action-type-btn"        data-action="RotateAdmin"        onclick="selectActionType('RotateAdmin')">         <span class="at-icon">🔑</span><span class="at-name">Rotate Admin</span>           </button>
+            <button class="action-type-btn"        data-action="CreateVesting"      onclick="selectActionType('CreateVesting')">       <span class="at-icon">⏱</span><span class="at-name">Vesting Schedule</span>       </button>
           </div>
         </div>
 

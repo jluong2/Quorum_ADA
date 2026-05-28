@@ -1294,6 +1294,247 @@ test("query_drep_status works in mock mode",             test_query_drep_status_
 test("generate_drep_metadata accepts custom name",       test_generate_drep_metadata_custom_name)
 
 
+# ─── Section 16: Vesting ──────────────────────────────────
+print("\n── 16. Vesting types, datums, transactions ──")
+
+from fos_agent.types import VestingTranche, VestingDatum, CreateVestingAction
+from fos_agent.transactions import build_create_vesting_tx, build_claim_vesting_tx
+
+NOW_MS = int(time.time() * 1000)
+
+_REG_TX  = "a1" * 32   # 64 hex chars
+_GOV_TX  = "b2" * 32
+_TREAS_TX = "c3" * 32
+_VEST_TX  = "d4" * 32
+
+def _make_vesting_state():
+    members = [
+        RegistryMember(key_hash="a1" * 28, role=ROLE_ADMIN,     joined_at=NOW_MS - 86400000, status=STATUS_ACTIVE),
+        RegistryMember(key_hash="b2" * 28, role=ROLE_MEMBER,    joined_at=NOW_MS - 86400000, status=STATUS_ACTIVE),
+    ]
+    registry = RegistryDatum(members=members, admin="a1" * 28, version=1, governance_script_hash="ff" * 28)
+    reg_utxo = make_utxo(_REG_TX, 0, 3_000_000)
+    reg_utxo.datum = registry
+
+    tranches = [
+        VestingTranche(release_time=NOW_MS - 86400000, lovelace=1_000_000),  # matured
+        VestingTranche(release_time=NOW_MS + 86400000, lovelace=2_000_000),  # future
+    ]
+    action = CreateVestingAction(
+        recipient="b2" * 28,
+        tranches=tranches,
+        memo="quarterly vesting",
+    )
+    gov_datum = GovernanceDatum(
+        proposer="a1" * 28, description="Vest 3 ADA", action=action,
+        votes=[], status=PROPOSAL_EXECUTED,
+        vote_deadline=NOW_MS - 1000, execute_after=NOW_MS - 500,
+        quorum=3, registry_ref=OutputReference(_REG_TX, 0),
+        registry_version=1, deposit=2_000_000,
+    )
+    gov_utxo = make_utxo(_GOV_TX, 0, 2_000_000)
+    gov_utxo.datum = gov_datum
+
+    treas_datum = TreasuryDatum(governance_script_hash="ff" * 28, max_transfer_lovelace=5_000_000)
+    treas_utxo = make_utxo(_TREAS_TX, 0, 47_000_000)
+    treas_utxo.datum = treas_datum
+
+    vest_datum = VestingDatum(
+        recipient="b2" * 28,
+        tranches=tranches,
+        proposal_ref=OutputReference(_GOV_TX, 0),
+    )
+    vest_utxo = make_utxo(_VEST_TX, 0, 3_000_000)
+    vest_utxo.datum = vest_datum
+
+    return registry, reg_utxo, gov_datum, gov_utxo, treas_datum, treas_utxo, vest_datum, vest_utxo, tranches
+
+
+def test_vesting_tranche_matured():
+    t = VestingTranche(release_time=NOW_MS - 1000, lovelace=1_000_000)
+    ok(t.release_time <= NOW_MS)
+
+def test_vesting_tranche_future():
+    t = VestingTranche(release_time=NOW_MS + 1_000_000, lovelace=1_000_000)
+    ok(t.release_time > NOW_MS)
+
+def test_create_vesting_action_str():
+    a = CreateVestingAction(recipient="b2" * 28, tranches=[
+        VestingTranche(release_time=NOW_MS + 86400000, lovelace=1_000_000),
+    ], memo="vest")
+    ok("CreateVesting" in str(a))
+    eq(a.total_lovelace(), 1_000_000)
+
+def test_vesting_datum_matured_remaining():
+    _, _, _, _, _, _, vest_datum, _, tranches = _make_vesting_state()
+    matured = vest_datum.matured_tranches(NOW_MS)
+    remaining = vest_datum.remaining_tranches(NOW_MS)
+    eq(len(matured), 1)
+    eq(len(remaining), 1)
+    eq(vest_datum.claimable_lovelace(NOW_MS), 1_000_000)
+
+def test_build_create_vesting_tx():
+    _, _, gov_datum, gov_utxo, treas_datum, treas_utxo, _, _, _ = _make_vesting_state()
+    tx = build_create_vesting_tx(
+        treasury_utxo=treas_utxo,
+        treasury_datum=treas_datum,
+        governance_utxo=gov_utxo,
+        governance_datum=gov_datum,
+        vesting_script_hash="ee" * 28,
+        treasury_script_hash="ff" * 28,
+    )
+    ok(isinstance(tx, UnsignedTransaction))
+    ok("CreateVesting" in tx.description or "3.00" in tx.description)
+    eq(len(tx.inputs), 1)         # treasury UTxO
+    eq(len(tx.reference_inputs), 1)  # governance UTxO
+    eq(len(tx.outputs), 2)        # vesting + treasury continuing
+
+def test_build_create_vesting_tx_total_lovelace():
+    _, _, gov_datum, gov_utxo, treas_datum, treas_utxo, _, _, tranches = _make_vesting_state()
+    tx = build_create_vesting_tx(
+        treasury_utxo=treas_utxo,
+        treasury_datum=treas_datum,
+        governance_utxo=gov_utxo,
+        governance_datum=gov_datum,
+        vesting_script_hash="ee" * 28,
+    )
+    vesting_out = tx.outputs[0]
+    total = sum(t.lovelace for t in tranches)
+    eq(vesting_out.lovelace, total)
+
+def test_build_claim_vesting_tx_partial():
+    _, _, _, _, _, _, vest_datum, vest_utxo, _ = _make_vesting_state()
+    recipient_addr = "addr_test1v" + "b2" * 20
+    tx = build_claim_vesting_tx(
+        vesting_utxo=vest_utxo,
+        vesting_datum=vest_datum,
+        recipient_address=recipient_addr,
+        current_time_ms=NOW_MS,
+        vesting_script_hash="ee" * 28,
+    )
+    ok(isinstance(tx, UnsignedTransaction))
+    ok("ClaimVested" in tx.description or "1.00" in tx.description)
+    eq(len(tx.outputs), 2)  # recipient + continuing vesting UTxO
+    eq(tx.outputs[0].lovelace, 1_000_000)   # matured amount
+    eq(tx.outputs[1].lovelace, 2_000_000)   # remaining
+
+def test_build_claim_vesting_tx_full():
+    # When all tranches matured, no continuing output
+    tranches_all_matured = [
+        VestingTranche(release_time=NOW_MS - 2_000_000, lovelace=1_000_000),
+        VestingTranche(release_time=NOW_MS - 1_000_000, lovelace=2_000_000),
+    ]
+    vest_datum = VestingDatum(
+        recipient="b2" * 28,
+        tranches=tranches_all_matured,
+        proposal_ref=OutputReference(_GOV_TX, 0),
+    )
+    vest_utxo = make_utxo("e5" * 32, 0, 3_000_000)
+    vest_utxo.datum = vest_datum
+
+    tx = build_claim_vesting_tx(
+        vesting_utxo=vest_utxo,
+        vesting_datum=vest_datum,
+        recipient_address="addr_test1vb2b2b2",
+        current_time_ms=NOW_MS,
+        vesting_script_hash="ee" * 28,
+    )
+    eq(len(tx.outputs), 1)  # only recipient, no continuing output
+    eq(tx.outputs[0].lovelace, 3_000_000)
+
+def test_build_claim_vesting_tx_no_matured():
+    # Nothing matured yet → should raise
+    tranches_future = [
+        VestingTranche(release_time=NOW_MS + 1_000_000, lovelace=2_000_000),
+    ]
+    vest_datum = VestingDatum(
+        recipient="b2" * 28, tranches=tranches_future,
+        proposal_ref=OutputReference(_GOV_TX, 0),
+    )
+    vest_utxo = make_utxo("f6" * 32, 0, 2_000_000)
+    vest_utxo.datum = vest_datum
+
+    raised = False
+    try:
+        build_claim_vesting_tx(
+            vesting_utxo=vest_utxo, vesting_datum=vest_datum,
+            recipient_address="addr_test1vb2b2",
+            current_time_ms=NOW_MS, vesting_script_hash="ee" * 28,
+        )
+    except AssertionError:
+        raised = True
+    ok(raised, "Expected AssertionError when no tranches matured")
+
+def test_mock_fos_state_has_vesting():
+    from fos_agent.chain import mock_fos_state
+    s = mock_fos_state()
+    ok(len(s.vesting_utxos) > 0)
+    _, d = s.vesting_utxos[0]
+    ok(len(d.tranches) > 0)
+
+def test_fos_state_claimable_vesting():
+    from fos_agent.chain import mock_fos_state
+    s = mock_fos_state()
+    # The mock has one matured tranche
+    ok(len(s.claimable_vesting) > 0)
+
+def test_vesting_datum_cbor_roundtrip():
+    try:
+        from fos_agent.datums import vesting_datum_cbor_hex
+        from fos_agent.types import VestingDatum as VD
+    except ImportError:
+        return  # cbor2 not installed
+    d = VestingDatum(
+        recipient="aa" * 28,
+        tranches=[VestingTranche(release_time=1_000_000, lovelace=2_000_000)],
+        proposal_ref=OutputReference("bb" * 32, 0),  # bb is valid hex
+    )
+    hex_val = vesting_datum_cbor_hex(d)
+    ok(len(hex_val) > 0)
+    d2 = VestingDatum.from_cbor_hex(hex_val)
+    eq(d2.recipient, d.recipient)
+    eq(len(d2.tranches), 1)
+    eq(d2.tranches[0].lovelace, 2_000_000)
+    eq(d2.proposal_ref.output_index, 0)
+
+def test_create_vesting_action_cbor_roundtrip():
+    try:
+        from fos_agent.datums import governance_datum_cbor_hex
+        from fos_agent.types import GovernanceDatum as GD
+    except ImportError:
+        return
+    tranches = [VestingTranche(release_time=9_000_000, lovelace=1_500_000)]
+    action = CreateVestingAction(recipient="cc" * 28, tranches=tranches, memo="vest test")
+    gov = GovernanceDatum(
+        proposer="a1" * 28, description="Vest test",
+        action=action, votes=[], status=PROPOSAL_VOTING,
+        vote_deadline=NOW_MS + 86400000, execute_after=NOW_MS + 86400000 * 2,
+        quorum=3, registry_ref=OutputReference("aa" * 32, 0),
+        registry_version=1, deposit=2_000_000,
+    )
+    hex_val = governance_datum_cbor_hex(gov)
+    ok(len(hex_val) > 0)
+    gov2 = GovernanceDatum.from_cbor_hex(hex_val)
+    ok(isinstance(gov2.action, CreateVestingAction))
+    eq(gov2.action.memo, "vest test")
+    eq(gov2.action.tranches[0].lovelace, 1_500_000)
+
+
+test("VestingTranche: matured if release_time <= now",          test_vesting_tranche_matured)
+test("VestingTranche: future if release_time > now",            test_vesting_tranche_future)
+test("CreateVestingAction: __str__ and total_lovelace",         test_create_vesting_action_str)
+test("VestingDatum: matured/remaining split correct",           test_vesting_datum_matured_remaining)
+test("build_create_vesting_tx: shape and inputs",               test_build_create_vesting_tx)
+test("build_create_vesting_tx: vesting output holds total",     test_build_create_vesting_tx_total_lovelace)
+test("build_claim_vesting_tx: partial claim → 2 outputs",       test_build_claim_vesting_tx_partial)
+test("build_claim_vesting_tx: full claim → 1 output",           test_build_claim_vesting_tx_full)
+test("build_claim_vesting_tx: nothing matured raises",          test_build_claim_vesting_tx_no_matured)
+test("mock_fos_state: has vesting UTxOs",                       test_mock_fos_state_has_vesting)
+test("FOSState.claimable_vesting: detects matured tranche",     test_fos_state_claimable_vesting)
+test("VestingDatum CBOR roundtrip",                             test_vesting_datum_cbor_roundtrip)
+test("CreateVestingAction CBOR roundtrip via GovernanceDatum",  test_create_vesting_action_cbor_roundtrip)
+
+
 # ─── Results ──────────────────────────────────────────────
 
 total = passed + failed

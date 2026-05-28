@@ -65,18 +65,40 @@ Handles proposals and voting. Each proposal lives in its own UTxO and records:
 | `RotateAdmin` | Replace the registry admin key — applied via `GovernanceApproval` on the registry validator, no admin key required |
 | `UpdateRegistryMember` | Change a member's role or status — applied via `GovernanceApproval` on the registry validator, no admin key required |
 | `OffChainDecision` | Record a governance decision that has no on-chain execution (e.g. elect an officer) |
+| `CreateVesting` | Fund a new vesting UTxO at `vesting.ak` from the treasury; `recipient`, `tranches: List<VestingTranche>`, and `memo` are stored on-chain; recipient claims each tranche after its `release_time` passes |
 
 #### Layer 3 — Treasury (`treasury.ak`)
 
-Holds the organisation's ADA and native tokens. The treasury UTxO can only be spent when:
+Holds the organisation's ADA and native tokens. The treasury UTxO can only be spent in two ways:
 
+**`ExecuteTransfer`** — releases funds for a `TreasuryTransfer` proposal:
 1. A governance proposal with a `TreasuryTransfer` action has status `Executed`
 2. The governance UTxO is included as a **reference input** (read-only, not consumed)
 3. The recipient receives at least the approved ADA amount and all approved native tokens
 4. The ADA transfer amount does not exceed the per-proposal cap in `TreasuryDatum`
 5. The governance script hash in `TreasuryDatum` matches the actual governance script (preventing a fake "Executed" UTxO from draining funds)
-6. The continuing treasury output holds at least `treasury_in - approved_transfer` lovelace (preventing the submitter from draining remaining ADA to their change address)
-7. The continuing treasury output holds at least `treasury_token_balance - approved_token_quantity` for each approved native token (`treasury_conserves_tokens` helper in `treasury.ak`)
+6. The continuing treasury output holds at least `treasury_in - approved_transfer` lovelace
+7. The continuing treasury output holds at least `treasury_token_balance - approved_token_quantity` for each approved native token (`treasury_conserves_tokens` helper)
+
+**`CreateVestingSchedule { governance_ref, vesting_script_hash }`** — funds a vesting schedule for a `CreateVesting` proposal:
+1. A governance proposal with a `CreateVesting` action has status `Executed`
+2. Exactly one output goes to `vesting_script_hash` holding at least the sum of all vesting tranches
+3. That output carries a `VestingDatum` matching the governance action (`recipient`, `tranches`, `proposal_ref = governance_ref`)
+4. The continuing treasury output holds at least `treasury_in - total_vesting_lovelace`
+
+#### Layer 4 — Vesting (`vesting.ak`)
+
+A new validator holding one UTxO per active vesting schedule. The UTxO can only be spent via `ClaimVested`:
+
+1. Signed by `datum.recipient`
+2. Transaction validity lower bound is `Finite(valid_lower)` — the submitter commits to a moment in time
+3. Tranches with `release_time <= valid_lower` are **matured** and can be claimed; the rest remain locked
+4. At least one tranche must have matured (rejects premature claims)
+5. Recipient receives lovelace ≥ sum of matured tranches
+6. If remaining tranches exist, a continuing output at the same address carries the updated `VestingDatum` (unchanged `recipient` and `proposal_ref`, matured tranches removed, lovelace ≥ sum of remaining)
+7. If all tranches are claimed, no continuing output is required — the UTxO is fully consumed
+
+`CancelVesting` always returns `False` — vesting schedules are irrevocable once funded.
 
 ### 2.2 Operator Agent — `fos_agent/`
 
@@ -134,6 +156,8 @@ Three modules handle the full transaction lifecycle:
   | `build_execute_transfer_tx` | Spend treasury UTxO, pay approved ADA + native tokens to recipient, return remainder to treasury |
   | `build_execute_registry_action_tx` | Apply a `RotateAdmin` or `UpdateRegistryMember` mutation via `GovernanceApproval` redeemer (constructor 4) — no admin key needed |
   | `build_set_delegate_tx` | Set or clear a member's vote delegate — self-service, signed by member, uses `SetDelegate` redeemer (constructor 5) |
+  | `build_create_vesting_tx` | Spend treasury UTxO for an Executed `CreateVesting` proposal; creates vesting UTxO at `vesting_script_hash` with `VestingDatum`; treasury continuing output holds remainder |
+  | `build_claim_vesting_tx` | Spend vesting UTxO; pays matured tranches to recipient; if remaining tranches exist, creates continuing vesting output with updated `VestingDatum` |
 - **`datums.py`** — serialises Python datum objects back to on-chain CBOR hex (the inverse of parsing). Used to construct the inline datum on the continuing output for every validator spend.
 - **`signing.py`** — integrates PyCardano to derive addresses from script hashes and verification key hashes, estimate fees, and sign a completed transaction body with an Ed25519 private key.
 
@@ -153,22 +177,29 @@ A Flask web application that renders the live on-chain state and lets a human op
 | `POST /api/expire` | Build an expire-proposal transaction |
 | `POST /api/transfer` | Build a treasury transfer transaction (ADA + native tokens) |
 | `POST /api/delegate` | Build a set-delegate transaction `{member_key_hash, new_delegate}` |
+| `POST /api/vesting/fund` | Build a `CreateVestingSchedule` tx `{governance_ref, vesting_script_hash}` — funds vesting UTxO from treasury |
+| `POST /api/vesting/claim` | Build a `ClaimVested` tx `{vesting_ref, recipient_address}` — claims matured tranches |
 | `POST /api/executor/run` | Run the executor agent for an Executed proposal |
 | `GET /api/drep` | Return the agent's CIP-95 DRep registration status and voting power |
 | `GET /api/audit` | Last 50 audit log entries |
 | `POST /api/tx/submit` | Submit a signed CBOR hex to the chain via Blockfrost |
 | `GET /api/wallet/balance` | ADA balance for an address (used by the wallet connect flow) |
 
-When no `BLOCKFROST_PROJECT_ID` is configured, the dashboard runs in **mock mode** — it generates a realistic demo state (5 members, 4 proposals including a native token grant with a mock IPFS rationale, a treasury balance, and a DRep status panel) so the interface can be explored without a deployment.
+When no `BLOCKFROST_PROJECT_ID` is configured, the dashboard runs in **mock mode** — it generates a realistic demo state (5 members, 4 proposals including a native token grant with a mock IPFS rationale, a treasury balance, a DRep status panel, and one active vesting schedule with a matured tranche) so the full interface can be explored without a deployment.
+
+**Vesting panel**
+
+When the state includes active vesting UTxOs (read from `FOS_VESTING_SCRIPT_HASH` or mock data), a **Vesting Schedules** panel renders below the proposals grid. Each card shows the recipient, tranche list with maturity status, total balance, and a **↓ Claim X ₳** button for any schedule that has matured tranches ready to claim. The claim button calls `POST /api/vesting/claim`.
 
 **Creating a proposal**
 
-A **New Proposal** button in the dashboard header opens a modal with four action-type cards (💸 Treasury Transfer, 📋 Off-Chain Decision, 👤 Update Member, 🔑 Rotate Admin). Selecting a type reveals the relevant fields:
+A **New Proposal** button in the dashboard header opens a modal with five action-type cards (💸 Treasury Transfer, 📋 Off-Chain Decision, 👤 Update Member, 🔑 Rotate Admin, ⏱ Vesting Schedule). Selecting a type reveals the relevant fields:
 
 - *Treasury Transfer* — recipient (member dropdown or raw key hash), ADA amount, memo; optionally one or more native tokens (policy ID + asset name + quantity rows added with "+ Add Token"); cap enforced client-side and server-side
 - *Off-Chain Decision* — decision memo
 - *Update Member* — target member (populated from live registry), new role, new status
 - *Rotate Admin* — new admin key hash
+- *Vesting Schedule* — recipient (member dropdown or raw key hash), one or more tranches (date picker + ADA amount per tranche, added with "+ Add Tranche"), memo
 
 Timeline fields (vote deadline hours, timelock hours), quorum threshold, deposit amount (default 2 ADA, minimum 2 ADA), and an optional **Rationale URL** (IPFS CID `ipfs://…` or HTTPS) are always shown. The rationale URL is stored as transaction metadata label 675 — not in the on-chain datum — and the dashboard renders a "📄 Rationale" link on each proposal card. On submit the form calls `POST /api/propose`, which validates all inputs, constructs the `GovernanceDatum`, and returns an `UnsignedTransaction` routed through the same sign-and-submit flow as voting.
 
@@ -262,6 +293,20 @@ PORT=5050 python3 fos_ui/app.py
       checks status == Executed and registry_version == current version
       New registry datum written with mutation applied and version incremented
 
+5b. Vesting schedule (if action = CreateVesting)
+   └─ Operator calls /api/vesting/fund  →  treasury UTxO is spent
+      CreateVestingSchedule redeemer references the Executed governance UTxO
+      A new vesting UTxO is created at the vesting script address
+      VestingDatum records recipient, tranches, and proposal_ref (audit link)
+      Treasury continuing output holds treasury_in - total_vesting_lovelace
+
+   [Later, as each release_time passes]
+   └─ Recipient calls /api/vesting/claim  →  vesting UTxO is spent
+      ClaimVested redeemer with validity_lower_bound set to current time
+      Matured tranches (release_time ≤ lower_bound) flow to recipient
+      Remaining tranches stay locked in new continuing vesting UTxO
+      Final claim consumes the UTxO entirely (no continuing output needed)
+
 6. Expiry (if deadline passed without quorum)
    └─ Operator calls /api/expire  →  flips status Voting → Expired
 ```
@@ -339,6 +384,11 @@ The treasury datum stores the `governance_script_hash` — the hash of the compi
 | Delegated weight cannot be double-counted | `effective_vote_weight` excludes delegators who voted directly |
 | Native token recipient gets all approved tokens | `tokens_to_recipient` in `treasury.ak` sums each token across all outputs to recipient |
 | Native token remainder conserved in treasury | `treasury_conserves_tokens` asserts `after >= before - approved` for each token |
+| Vesting schedules are irrevocable | `CancelVesting` always returns `False` in `vesting.ak` |
+| Vesting tranche claims are time-gated | `ClaimVested` checks `release_time <= validity_lower_bound` — cannot claim early |
+| Vesting recipient cannot be changed | Continuing output must carry unchanged `recipient` and `proposal_ref` on partial claims |
+| Vesting UTxO always holds remaining lovelace | Continuing output lovelace ≥ sum of unclaimed tranches |
+| Vesting funded by governance, not admin | Treasury `CreateVestingSchedule` redeemer authenticates via governance reference input and script hash |
 | Agent decisions are auditable | Every action logged to `.fos_audit.jsonl` |
 | Human confirmation before on-chain submission | `FOS_AUTONOMOUS_MODE=false` (default) |
 
@@ -365,18 +415,19 @@ The treasury datum stores the `governance_script_hash` — the hash of the compi
 
 ```
 identity_registry/
-  lib/fos_types.ak          ← All shared on-chain types
+  lib/fos_types.ak          ← All shared on-chain types (incl. VestingTranche, VestingDatum, CreateVesting)
   validators/
     identity_registry.ak    ← Layer 1: membership management
     governance.ak           ← Layer 2: proposals + weighted voting
-    treasury.ak             ← Layer 3: ADA release logic
+    treasury.ak             ← Layer 3: ADA release + vesting funding (CreateVestingSchedule redeemer)
+    vesting.ak              ← Layer 4: time-locked vesting (ClaimVested / CancelVesting)
 
 fos_agent/
-  config.py                 ← Env var configuration
-  types.py                  ← Python mirrors of fos_types.ak (with CBOR parsing; includes NativeToken)
-  chain.py                  ← Blockfrost client + FOSState snapshot
-  transactions.py           ← One tx builder per Quorum action
-  datums.py                 ← Python → on-chain CBOR serialisation
+  config.py                 ← Env var configuration (incl. FOS_VESTING_SCRIPT_HASH)
+  types.py                  ← Python mirrors of fos_types.ak (incl. VestingTranche, VestingDatum, CreateVestingAction)
+  chain.py                  ← Blockfrost client + FOSState (incl. vesting_utxos, claimable_vesting)
+  transactions.py           ← One tx builder per Quorum action (incl. build_create_vesting_tx, build_claim_vesting_tx)
+  datums.py                 ← Python → on-chain CBOR serialisation (incl. vesting_datum_cbor_hex)
   signing.py                ← PyCardano address derivation + Ed25519 signing
   agent.py                  ← Claude AI operator agent
   alerts.py                 ← AlertManager (Discord/Slack webhook notifications)

@@ -17,6 +17,7 @@ Most governance tooling assumes a human is reading dashboards and clicking butto
 - **Liquid democracy**: members can delegate their voting weight to another member; delegators who vote directly override their own delegation
 - **Proposal deposits**: proposers lock ADA (minimum 2 ADA) when creating a proposal — refunded on pass, forfeited on expiry; deters spam without governance overhead
 - **Native token treasury**: `TreasuryTransfer` proposals can include a list of `NativeToken` assets alongside ADA; the treasury validator enforces token conservation on the continuing output
+- **Time-locked vesting**: `CreateVesting` proposals fund a new vesting UTxO from the treasury; the recipient claims tranches as each `release_time` passes; a new `vesting.ak` validator enforces claim rules on-chain
 - **IPFS rationale documents**: proposals can link to a CID or HTTPS URL stored as tx metadata (label 675); the dashboard shows a "📄 Rationale" link on each card
 - **CIP-95 DRep registration**: the agent can register as a Cardano Delegated Representative so ADA holders can delegate their on-chain voting power to it; `scripts/register_drep.py` builds the certificate, `fos_agent/drep.py` queries status
 - **Webhook alerts**: Discord/Slack notifications for new proposals, quorum reached, approaching deadlines, high-value transfers, and at-risk proposals (< 48 h, < 50% participation)
@@ -80,7 +81,8 @@ Three Aiken validators, each holding one UTxO of on-chain state:
 |---|---|---|
 | 1 | `identity_registry.ak` | Membership — key hashes, roles, statuses, version |
 | 2 | `governance.ak` | Proposals — typed actions, weighted voting, timelock |
-| 3 | `treasury.ak` | ADA — locked funds, guarded release |
+| 3 | `treasury.ak` | ADA — locked funds, guarded release + vesting funding |
+| 4 | `vesting.ak` | Time-locked vesting — tranche-by-tranche recipient claims |
 
 **Proposal actions:**
 
@@ -90,6 +92,7 @@ Three Aiken validators, each holding one UTxO of on-chain state:
 | `RotateAdmin` | Replace the registry admin key (registry validator — no admin key needed) |
 | `UpdateRegistryMember` | Change a member's role or status (registry validator — no admin key needed) |
 | `OffChainDecision` | Record a governance decision with no on-chain execution |
+| `CreateVesting` | Fund a time-locked vesting schedule at the vesting validator; recipient claims tranches as each `release_time` passes |
 
 `RotateAdmin` and `UpdateRegistryMember` proposals use the `GovernanceApproval` redeemer on the registry validator. The registry verifies the governance reference input by script hash, confirms status is `Executed`, and checks the proposal's pinned `registry_version` matches the current version (replay protection).
 
@@ -103,6 +106,8 @@ Three Aiken validators, each holding one UTxO of on-chain state:
 - Governance datum fields are fully locked in Execute and Expire paths. All ten immutable fields (`proposer`, `description`, `action`, `votes`, `quorum`, `execute_after`, `vote_deadline`, `registry_ref`, `registry_version`, `deposit`) are checked on the continuing output — no field can be silently mutated during status transitions.
 - Suspended members lose voting weight retroactively. `count_weighted_yes` checks `status == Active` at execution time, not at vote-cast time.
 - Every validator requires a continuing output — state can never disappear from the chain.
+- Vesting schedules are irrevocable. `CancelVesting` always returns `False` — once the treasury funds a vesting UTxO, only the designated recipient can claim it, tranche by tranche as each `release_time` passes.
+- Vesting datum integrity on partial claims. After each `ClaimVested` spend the continuing output must carry the unchanged `recipient` and `proposal_ref`, only the matured tranches removed from `tranches`, and lovelace ≥ the sum of remaining tranches.
 
 ---
 
@@ -158,6 +163,7 @@ export BLOCKFROST_PROJECT_ID="preprod..."
 export FOS_REGISTRY_SCRIPT_HASH="..."
 export FOS_GOVERNANCE_SCRIPT_HASH="..."
 export FOS_TREASURY_SCRIPT_HASH="..."
+export FOS_VESTING_SCRIPT_HASH="..."   # optional — enables vesting UTxO reads
 python3 fos_ui/app.py
 ```
 
@@ -202,6 +208,7 @@ python3 -c "from fos_agent import run_monitor; run_monitor(300)"
 export FOS_AGENT_SIGNING_KEY="<32-byte Ed25519 hex>"   # agent's private key
 export FOS_COLLATERAL_REF="<txhash#index>"              # UTxO with 5+ ADA
 export FOS_AUTONOMOUS_MODE="true"
+export FOS_VESTING_SCRIPT_HASH="..."                    # optional — enables vesting UTxO reads
 python3 -c "from fos_agent import run_monitor; run_monitor(300)"
 ```
 

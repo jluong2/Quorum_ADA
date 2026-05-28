@@ -5,8 +5,9 @@ use aiken/transaction.{
 use aiken/transaction/credential.{ScriptCredential, VerificationKeyCredential}
 use aiken/transaction/value
 use fos_types.{
-  Executed, GovernanceDatum, NativeToken, OffChainDecision, ProposalAction,
-  RotateAdmin, TreasuryTransfer, UpdateRegistryMember,
+  CreateVesting, Executed, GovernanceDatum, NativeToken, OffChainDecision,
+  ProposalAction, RotateAdmin, TreasuryTransfer, UpdateRegistryMember,
+  VestingDatum,
 }
 
 // ─── Types ────────────────────────────────────────────────
@@ -34,6 +35,12 @@ pub type TreasuryRedeemer {
   // governance_ref: the OutputReference of the Executed governance UTxO.
   // Must be included in the transaction's reference_inputs.
   ExecuteTransfer { governance_ref: OutputReference }
+  // Fund a vesting schedule approved by a CreateVesting governance proposal.
+  // The vesting UTxO is created at vesting_script_hash locked by a VestingDatum.
+  CreateVestingSchedule {
+    governance_ref: OutputReference,
+    vesting_script_hash: ByteArray,
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -200,6 +207,61 @@ validator {
             continuing.value,
             tokens,
           )
+
+        new_datum.governance_script_hash == datum.governance_script_hash && new_datum.max_transfer_lovelace == datum.max_transfer_lovelace
+      }
+
+      CreateVestingSchedule { governance_ref, vesting_script_hash } -> {
+        // ── 1. Load and authenticate the governance proposal ──
+        let gov_datum =
+          load_governance(ctx, governance_ref, datum.governance_script_hash)
+
+        // ── 2. Proposal must be fully executed ────────────────
+        expect gov_datum.status == Executed
+
+        // ── 3. Action must be a CreateVesting ─────────────────
+        expect CreateVesting { recipient, tranches, .. } = gov_datum.action
+
+        // ── 4. Total lovelace to vest ─────────────────────────
+        let total_lovelace =
+          list.foldl(tranches, 0, fn(t, acc) { acc + t.lovelace })
+
+        // ── 5. Vesting UTxO is created at the vesting script ──
+        // Exactly one output must go to the vesting script with a correct VestingDatum.
+        let vesting_outputs =
+          list.filter(
+            outputs,
+            fn(o) {
+              when o.address.payment_credential is {
+                ScriptCredential(sh) -> sh == vesting_script_hash
+                _ -> False
+              }
+            },
+          )
+        expect [vesting_out] = vesting_outputs
+
+        // ── 6. Vesting UTxO holds the full vesting amount ─────
+        expect value.lovelace_of(vesting_out.value) >= total_lovelace
+
+        // ── 7. Vesting datum matches the governance action ────
+        expect InlineDatum(raw) = vesting_out.datum
+        expect vesting_datum: VestingDatum = raw
+        expect vesting_datum.recipient == recipient
+        expect vesting_datum.tranches == tranches
+        expect vesting_datum.proposal_ref == governance_ref
+
+        // ── 8. Treasury continues with remaining ADA ──────────
+        expect Spend(own_ref) = ctx.purpose
+        expect Some(own_input) = find_input(inputs, own_ref)
+        let own_address = own_input.output.address
+        let treasury_outputs =
+          list.filter(outputs, fn(o) { o.address == own_address })
+        expect [continuing] = treasury_outputs
+        expect InlineDatum(raw2) = continuing.datum
+        expect new_datum: TreasuryDatum = raw2
+
+        let treasury_in_lovelace = value.lovelace_of(own_input.output.value)
+        expect value.lovelace_of(continuing.value) >= treasury_in_lovelace - total_lovelace
 
         new_datum.governance_script_hash == datum.governance_script_hash && new_datum.max_transfer_lovelace == datum.max_transfer_lovelace
       }
@@ -393,4 +455,46 @@ test treasury_transfer_with_native_tokens() {
     TreasuryTransfer { tokens, .. } -> list.length(tokens) == 1
     _ -> False
   }
+}
+
+// ─── Vesting schedule tests ───────────────────────────────
+
+test create_vesting_action_is_recognized() {
+  let action: ProposalAction =
+    CreateVesting {
+      recipient: #"aa",
+      tranches: [
+        fos_types.VestingTranche { release_time: 1000, lovelace: 2_000_000 },
+        fos_types.VestingTranche { release_time: 2000, lovelace: 3_000_000 },
+      ],
+      memo: #"vesting schedule",
+    }
+  when action is {
+    CreateVesting { recipient, tranches, .. } ->
+      recipient == #"aa" && list.length(tranches) == 2
+    _ -> False
+  }
+}
+
+test vesting_total_lovelace_is_sum_of_tranches() {
+  let tranches = [
+    fos_types.VestingTranche { release_time: 1000, lovelace: 2_000_000 },
+    fos_types.VestingTranche { release_time: 2000, lovelace: 3_000_000 },
+  ]
+  let total = list.foldl(tranches, 0, fn(t, acc) { acc + t.lovelace })
+  total == 5_000_000
+}
+
+test vesting_treasury_conservation_passes() {
+  let treasury_in = 20_000_000
+  let vesting_total = 5_000_000
+  let continuing_out = 15_000_000
+  continuing_out >= treasury_in - vesting_total
+}
+
+test vesting_treasury_conservation_fails_when_drained() {
+  let treasury_in = 20_000_000
+  let vesting_total = 5_000_000
+  let continuing_out = 5_000_000
+  !(continuing_out >= treasury_in - vesting_total)
 }

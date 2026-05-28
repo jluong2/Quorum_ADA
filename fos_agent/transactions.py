@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .types import (
+    CreateVestingAction,
     GovernanceDatum,
     NativeToken,
     OutputReference,
@@ -31,6 +32,8 @@ from .types import (
     TreasuryTransferAction,
     UpdateRegistryMemberAction,
     UTxO,
+    VestingDatum,
+    VestingTranche,
     VoteRecord,
     PROPOSAL_VOTING,
     PROPOSAL_EXECUTED,
@@ -636,4 +639,177 @@ def build_set_delegate_tx(
         redeemers=[_set_delegate_redeemer(registry_utxo.ref, member_key_hash, new_delegate)],
         required_signers=[member_key_hash],
         metadata={"msg": [f"Quorum: set delegate {action_desc}"]},
+    )
+
+
+def _create_vesting_schedule_redeemer(
+    treasury_ref: str, governance_ref: str, vesting_script_hash: str
+) -> Redeemer:
+    """Redeemer for CreateVestingSchedule (constructor 1 in TreasuryRedeemer)."""
+    tx_hash, idx = governance_ref.split("#")
+    return Redeemer(
+        input_ref=treasury_ref,
+        data={"constructor": 1, "fields": [
+            {"constructor": 0, "fields": [
+                {"constructor": 0, "fields": [{"bytes": tx_hash}]},
+                {"int": int(idx)},
+            ]},
+            {"bytes": vesting_script_hash},
+        ]},
+    )
+
+
+def _claim_vested_redeemer(vesting_ref: str) -> Redeemer:
+    """Redeemer for ClaimVested (constructor 0 in VestingRedeemer)."""
+    return Redeemer(
+        input_ref=vesting_ref,
+        data={"constructor": 0, "fields": []},
+    )
+
+
+def build_create_vesting_tx(
+    treasury_utxo: UTxO,
+    treasury_datum: TreasuryDatum,
+    governance_utxo: UTxO,
+    governance_datum: GovernanceDatum,
+    vesting_script_hash: str,
+    treasury_script_hash: str = "",
+) -> UnsignedTransaction:
+    """
+    Fund a vesting schedule from the treasury after a CreateVesting proposal executes.
+
+    inputs:           [treasury UTxO]
+    reference_inputs: [governance UTxO]
+    outputs:          [vesting UTxO at vesting script, treasury continuing output]
+
+    The vesting UTxO holds the full vesting amount locked by VestingDatum.
+    Each tranche is released to the recipient when its release_time passes.
+    """
+    assert governance_datum.is_executed, "Cannot fund vesting: proposal not Executed"
+    assert isinstance(governance_datum.action, CreateVestingAction), \
+        "Cannot fund vesting: proposal action is not CreateVesting"
+
+    action = governance_datum.action
+    total_lovelace = action.total_lovelace()
+    assert total_lovelace > 0, "Vesting schedule must lock at least some lovelace"
+    assert len(action.tranches) > 0, "Vesting schedule must have at least one tranche"
+    assert treasury_utxo.lovelace >= total_lovelace, \
+        f"Treasury ({treasury_utxo.lovelace}) has insufficient funds for vesting ({total_lovelace})"
+
+    net = _network_from_config()
+
+    vesting_datum = VestingDatum(
+        recipient=action.recipient,
+        tranches=action.tranches,
+        proposal_ref=governance_utxo.as_output_reference(),
+    )
+
+    try:
+        from .datums import vesting_datum_cbor_hex
+        vesting_datum_hex = vesting_datum_cbor_hex(vesting_datum)
+    except (ImportError, AssertionError):
+        vesting_datum_hex = "<vesting_datum_cbor_hex>"
+
+    vesting_address = _script_address(vesting_script_hash, net)
+    treasury_address = (
+        _script_address(treasury_script_hash, net)
+        if treasury_script_hash
+        else _script_address(treasury_datum.governance_script_hash, net)
+    )
+    remaining = treasury_utxo.lovelace - total_lovelace
+
+    return UnsignedTransaction(
+        description=(
+            f"CreateVestingSchedule {total_lovelace / 1_000_000:.2f}₳ "
+            f"→ {action.recipient[:12]}…  {len(action.tranches)} tranche(s)  memo={action.memo!r}"
+        ),
+        inputs=[treasury_utxo.ref],
+        reference_inputs=[governance_utxo.ref],
+        outputs=[
+            TxOutput(
+                address=vesting_address,
+                lovelace=total_lovelace,
+                datum_hex=vesting_datum_hex,
+            ),
+            TxOutput(
+                address=treasury_address,
+                lovelace=remaining,
+                datum_hex=_treasury_datum_hex_unchanged(treasury_utxo),
+            ),
+        ],
+        redeemers=[
+            _create_vesting_schedule_redeemer(
+                treasury_utxo.ref, governance_utxo.ref, vesting_script_hash
+            )
+        ],
+        required_signers=[],
+        metadata={"msg": [f"Quorum vesting schedule: {action.memo}"]},
+    )
+
+
+def build_claim_vesting_tx(
+    vesting_utxo: UTxO,
+    vesting_datum: VestingDatum,
+    recipient_address: str,
+    current_time_ms: int,
+    vesting_script_hash: str = "",
+) -> UnsignedTransaction:
+    """
+    Claim all matured tranches from a vesting UTxO.
+
+    inputs:  [vesting UTxO]
+    outputs: [recipient payment for matured amount]
+             [vesting continuing output for remaining tranches — omitted if all claimed]
+
+    The transaction validity lower bound is set to current_time_ms so the
+    on-chain validator knows which tranches have matured.
+    """
+    matured = vesting_datum.matured_tranches(current_time_ms)
+    remaining = vesting_datum.remaining_tranches(current_time_ms)
+
+    assert matured, "No tranches have matured yet — nothing to claim"
+
+    claim_amount = sum(t.lovelace for t in matured)
+    net = _network_from_config()
+
+    outputs = [
+        TxOutput(
+            address=recipient_address,
+            lovelace=claim_amount,
+        ),
+    ]
+
+    if remaining:
+        remaining_datum = VestingDatum(
+            recipient=vesting_datum.recipient,
+            tranches=remaining,
+            proposal_ref=vesting_datum.proposal_ref,
+        )
+        try:
+            from .datums import vesting_datum_cbor_hex
+            remaining_datum_hex = vesting_datum_cbor_hex(remaining_datum)
+        except (ImportError, AssertionError):
+            remaining_datum_hex = "<vesting_datum_cbor_hex>"
+
+        vesting_address = _script_address(vesting_script_hash, net)
+        remaining_lovelace = sum(t.lovelace for t in remaining)
+        outputs.append(TxOutput(
+            address=vesting_address,
+            lovelace=remaining_lovelace,
+            datum_hex=remaining_datum_hex,
+        ))
+
+    tranche_desc = f"{len(matured)} of {len(matured) + len(remaining)} tranche(s)"
+    return UnsignedTransaction(
+        description=(
+            f"ClaimVested {claim_amount / 1_000_000:.2f}₳ "
+            f"({tranche_desc}) → {vesting_datum.recipient[:12]}…"
+        ),
+        inputs=[vesting_utxo.ref],
+        reference_inputs=[],
+        outputs=outputs,
+        redeemers=[_claim_vested_redeemer(vesting_utxo.ref)],
+        validity_start_ms=current_time_ms,
+        required_signers=[vesting_datum.recipient],
+        metadata={"msg": ["Quorum: claim vested funds"]},
     )

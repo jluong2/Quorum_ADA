@@ -8,7 +8,7 @@ Three things in one repo:
 
 1. **Builder agent** (`agent.py`, `rag.py`, `rag_ingest.py`) — A Claude-powered coding agent that generates Aiken smart contracts from natural language, with an optional RAG layer for doc retrieval.
 
-2. **Quorum** (`identity_registry/`) — A three-layer on-chain governance protocol built in Aiken: identity registry → governance → treasury.
+2. **Quorum** (`identity_registry/`) — A four-layer on-chain governance protocol built in Aiken: identity registry → governance → treasury → vesting.
 
 3. **Quorum operator agent** (`fos_agent/`) — A Claude-powered autonomous operator that monitors the deployed Quorum contracts on-chain, votes on proposals, executes passed proposals, and releases treasury funds.
 
@@ -57,6 +57,7 @@ export FOS_AGENT_SIGNING_KEY="..."       # 32-byte Ed25519 hex private key
 export FOS_COLLATERAL_REF="..."          # "txhash#index" — UTxO with 5+ ADA for Plutus collateral
 export FOS_MAX_AUTO_TRANSFER_LOVELACE="5000000"   # per-proposal safety cap
 export FOS_AUTONOMOUS_MODE="false"       # set true to sign + submit without confirmation
+export FOS_VESTING_SCRIPT_HASH="..."     # optional — enables vesting UTxO reads
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."  # optional alerts
 export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."    # optional alerts
 export FOS_TREASURY_ALERT_ADA="10"      # alert when treasury drops below this (ADA)
@@ -131,7 +132,7 @@ pip install flask                                                          # Quo
 
 ## Quorum Contract Architecture
 
-### Three-layer stack
+### Four-layer stack
 
 ```
 identity_registry/
@@ -140,7 +141,8 @@ identity_registry/
   validators/
     identity_registry.ak  ← Layer 1: membership + roles
     governance.ak         ← Layer 2: proposals + weighted voting
-    treasury.ak           ← Layer 3: governed fund releases
+    treasury.ak           ← Layer 3: governed fund releases + vesting funding
+    vesting.ak            ← Layer 4: time-locked vesting (ClaimVested / CancelVesting)
 ```
 
 ### Reference input chain
@@ -161,7 +163,9 @@ All cross-validator types live here. The most important:
 - **`RegistryDatum`** — `members: List<RegistryMember>` + `admin` + `version` + `governance_script_hash`. The `version` field is monotonically incremented on every mutation (including `SetDelegate`). Governance and treasury pin this at proposal creation; a registry update invalidates open proposals. `governance_script_hash` is the hash of the governance validator — immutable after deployment, used by the `GovernanceApproval` redeemer to authenticate governance reference inputs.
 - **`GovernanceDatum`** — includes `action: ProposalAction`, `status: ProposalStatus`, `registry_ref: OutputReference`, `registry_version: Int`, and `deposit: Int`. The `deposit` field records the lovelace locked by the proposer at creation time. On Execute (quorum met) the deposit is refunded to the proposer in the same transaction. On Expire (deadline missed without quorum) the deposit stays locked in the governance UTxO — forfeited as a spam deterrent. Minimum deposit is `2_000_000` lovelace (2 ADA), enforced both on-chain (`min_deposit` constant in `governance.ak`) and off-chain (`MIN_PROPOSAL_DEPOSIT` in `transactions.py`).
 - **`NativeToken`** — `{ policy_id: ByteArray, asset_name: ByteArray, quantity: Int }`. Used in `TreasuryTransfer.tokens` to transfer Cardano native assets alongside ADA. The treasury validator enforces `tokens_to_recipient` (recipient gets all approved tokens) and `treasury_conserves_tokens` (continuing output holds at least the remainder). Python-side: `NativeToken.asset_name_str()` tries UTF-8 decode, falls back to hex.
-- **`ProposalAction`** — the typed union that connects governance to other validators: `TreasuryTransfer { recipient, lovelace, memo, tokens: List<NativeToken> }` (treasury pays out ADA and/or native tokens), `RotateAdmin` (registry rotates admin key), `UpdateRegistryMember` (registry updates a member), `OffChainDecision` (no on-chain execution). Treasury and registry validators each pattern-match on only their relevant action variants. The `tokens` field was added at the end of `TreasuryTransfer` for backward compatibility (old datums with 3 fields still parse — `tokens` defaults to `[]`).
+- **`ProposalAction`** — the typed union that connects governance to other validators: `TreasuryTransfer { recipient, lovelace, memo, tokens: List<NativeToken> }` (treasury pays out ADA and/or native tokens), `RotateAdmin` (registry rotates admin key), `UpdateRegistryMember` (registry updates a member), `OffChainDecision` (no on-chain execution), `CreateVesting { recipient, tranches: List<VestingTranche>, memo }` (treasury funds a new vesting UTxO at the vesting script). Treasury and registry validators each pattern-match on only their relevant action variants. The `tokens` field was added at the end of `TreasuryTransfer` for backward compatibility (old datums with 3 fields still parse — `tokens` defaults to `[]`).
+- **`VestingTranche`** — `{ release_time: Int, lovelace: Int }`. One time-locked slice of a vesting schedule. `release_time` is POSIX milliseconds — the earliest moment the tranche can be claimed.
+- **`VestingDatum`** — `{ recipient: VerificationKeyHash, tranches: List<VestingTranche>, proposal_ref: OutputReference }`. Inline datum on every vesting UTxO. `proposal_ref` is an immutable audit link back to the governance proposal that created the schedule. Matured tranches are removed on each `ClaimVested` spend; the list shrinks until the UTxO is fully drained.
 
 ### Key invariants
 
@@ -193,6 +197,14 @@ All cross-validator types live here. The most important:
 
 **Delegation is single-hop and self-service.** `SetDelegate` (constructor 5 in `RegistryAction`) lets a member update their own `delegate` field without admin or governance approval — they sign the tx themselves. The on-chain validator enforces: no self-delegation, target must be active, target's `delegate` must be `None` (no chains). Increments version like all mutations, invalidating open proposals.
 
+**Vesting schedules are irrevocable.** `CancelVesting` always returns `False` in `vesting.ak`. Once the treasury funds a vesting UTxO, only the designated recipient can spend it.
+
+**Vesting claims are time-gated by validity interval.** `ClaimVested` reads `validity_range.lower_bound` (must be `Finite`) and only allows tranches where `release_time <= lower_bound`. The submitter commits to a point in time — they cannot back-date the claim.
+
+**Vesting datum integrity on partial claims.** The continuing vesting output must carry the unchanged `recipient` and `proposal_ref`, exactly the unmatured tranches, and lovelace ≥ sum of those tranches. Matured tranches are permanently removed.
+
+**Vesting is treasury-funded, governance-authenticated.** The treasury `CreateVestingSchedule` redeemer verifies the governance reference input by script hash and confirms `status == Executed`, preventing a fake governance UTxO from misdirecting treasury funds to an arbitrary vesting address.
+
 **Delegated weight is carried by the delegate, not the delegator.** `effective_vote_weight(members, direct_voters, voter_key)` in `governance.ak` adds the weights of all active members who (a) delegated to `voter_key`, and (b) have not cast a direct vote of their own. A delegator who votes directly overrides the delegation — their weight stays with their own ballot.
 
 ---
@@ -212,8 +224,8 @@ All cross-validator types live here. The most important:
 
 - **`fos_agent/config.py`** — All configuration from env vars. `is_configured()` checks whether all required script hashes and the Blockfrost key are set. Without them, `BlockfrostClient` runs in mock mode.
 - **`fos_agent/types.py`** — Python mirrors of every type in `lib/fos_types.ak`, with `from_cbor_hex()` classmethods for deserializing Blockfrost inline datums. CBOR encoding: records → `Constr(0, fields)`, enum variant N → `Constr(N, [])`, `Bool True` → `Constr(1, [])`. Requires `cbor2`.
-- **`fos_agent/chain.py`** — `BlockfrostClient` wraps the Blockfrost REST API and returns typed Python objects. `read_fos_state()` snapshots all three validators in one call and returns a `FOSState`. `FOSState` has derived properties: `executable_proposals`, `expirable_proposals`, `executed_proposals`, `unreachable_quorum_proposals`, `executed_awaiting_registry` — computed from quorum, timelock, registry score, action type, and current time. `unreachable_quorum_proposals` flags active proposals where the max possible yes score is already below the quorum threshold so the agent can expire them immediately. `executed_awaiting_registry` flags Executed proposals with `RotateAdmin` or `UpdateRegistryMember` actions that still need `execute_registry_action` called.
-- **`fos_agent/transactions.py`** — One builder per FOS action. Each returns an `UnsignedTransaction` (inputs, reference\_inputs, outputs, redeemers, validity range, required signers). The builders assert security conditions before constructing — e.g. `build_execute_transfer_tx` raises if `status != Executed`, action is not `TreasuryTransfer`, or `lovelace > max_transfer_lovelace`. `build_execute_transfer_tx` now passes `action.tokens` to the recipient `TxOutput` and notes that the signing layer is responsible for returning the token remainder to the treasury. `build_execute_registry_action_tx` uses redeemer constructor 4 (`GovernanceApproval`) and applies the mutation in Python before serialising the new datum. `build_set_delegate_tx` uses redeemer constructor 5 (`SetDelegate`) and enforces no-self, no-chain, and active-target checks before building. `build_create_proposal_tx` accepts a `deposit` parameter (default `2_000_000`, minimum enforced by `MIN_PROPOSAL_DEPOSIT`) and an optional `rationale_url: str = ""` — when set, the URL is stored as tx metadata label 675 (`{"rationale": url}`); the proposal output holds `min_lovelace + deposit`. `build_execute_proposal_tx` adds a second output refunding `deposit` lovelace to the proposer's address when `deposit > 0`; the continuing governance output holds `in_lovelace - deposit`.
+- **`fos_agent/chain.py`** — `BlockfrostClient` wraps the Blockfrost REST API and returns typed Python objects. `read_fos_state()` snapshots all validators in one call and returns a `FOSState`. Accepts optional `vesting_script_hash` — when set, reads and parses all vesting UTxOs at that address. `FOSState` has derived properties: `executable_proposals`, `expirable_proposals`, `executed_proposals`, `unreachable_quorum_proposals`, `executed_awaiting_registry`, `claimable_vesting` — computed from quorum, timelock, registry score, action type, and current time. `claimable_vesting` filters `vesting_utxos` to those with at least one matured tranche (`release_time <= current_time_ms`). `unreachable_quorum_proposals` flags active proposals where the max possible yes score is already below the quorum threshold so the agent can expire them immediately. `executed_awaiting_registry` flags Executed proposals with `RotateAdmin` or `UpdateRegistryMember` actions that still need `execute_registry_action` called.
+- **`fos_agent/transactions.py`** — One builder per FOS action. Each returns an `UnsignedTransaction` (inputs, reference\_inputs, outputs, redeemers, validity range, required signers). The builders assert security conditions before constructing — e.g. `build_execute_transfer_tx` raises if `status != Executed`, action is not `TreasuryTransfer`, or `lovelace > max_transfer_lovelace`. `build_execute_transfer_tx` now passes `action.tokens` to the recipient `TxOutput` and notes that the signing layer is responsible for returning the token remainder to the treasury. `build_execute_registry_action_tx` uses redeemer constructor 4 (`GovernanceApproval`) and applies the mutation in Python before serialising the new datum. `build_set_delegate_tx` uses redeemer constructor 5 (`SetDelegate`) and enforces no-self, no-chain, and active-target checks before building. `build_create_proposal_tx` accepts a `deposit` parameter (default `2_000_000`, minimum enforced by `MIN_PROPOSAL_DEPOSIT`) and an optional `rationale_url: str = ""` — when set, the URL is stored as tx metadata label 675 (`{"rationale": url}`); the proposal output holds `min_lovelace + deposit`. `build_execute_proposal_tx` adds a second output refunding `deposit` lovelace to the proposer's address when `deposit > 0`; the continuing governance output holds `in_lovelace - deposit`. `build_create_vesting_tx` spends the treasury UTxO for an Executed `CreateVesting` proposal, creates a vesting UTxO at `vesting_script_hash` with a `VestingDatum`, and returns the remainder to the treasury (`CreateVestingSchedule` redeemer, constructor 1). `build_claim_vesting_tx` spends a vesting UTxO, pays matured tranches (those with `release_time <= current_time_ms`) to the recipient, and if unmatured tranches remain creates a continuing vesting output with the updated `VestingDatum` (`ClaimVested` redeemer, constructor 0).
 - **`fos_agent/agent.py`** — `FOSAgent` dispatches tool calls to `chain.py` / `transactions.py`. `run_fos_agent(instruction)` is the one-shot entry point; `run_monitor(interval)` wraps it in a polling loop, calling `AlertManager.check()` before each agent turn. Every decision is written to `.fos_audit.jsonl` via the `write_audit_log` tool. When `AUTONOMOUS_MODE=true`, `_sign_and_submit()` is called after each transaction builder — it fetches the agent's wallet UTxOs, loads compiled scripts from `plutus.json`, calls `signing.build_signed_transaction()`, and submits via Blockfrost.
 - **`fos_agent/alerts.py`** — `AlertManager` fires Discord/Slack webhook notifications for: new proposals, quorum reached, deadline within 24 h, high-value transfer proposals, treasury below threshold, and **at-risk proposals** (< 48 h left, quorum unmet, yes votes below 50% of maximum possible). Deduplicates via an in-memory `_fired` set so each alert fires at most once per process lifetime. Configure: `DISCORD_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `FOS_TREASURY_ALERT_ADA`.
 - **`fos_agent/proposal_agent.py`** — `run_proposal_agent(instruction)` drafts and submits governance proposals from natural language. Tools: `read_fos_state`, `draft_proposal` (validates feasibility, enforces supermajority quorum for high-stakes actions, returns preview), `submit_proposal` (only called after user confirms). Signs and submits autonomously when `AUTONOMOUS_MODE=true`.
@@ -277,6 +289,8 @@ execute_registry_action → builds UnsignedTransaction with:
 - ExecuteProposal → flips status `Voting → Executed`
 - ExpireProposal → flips status `Voting → Expired`
 - GovernanceApproval → applies `RotateAdmin` / `UpdateRegistryMember` mutation to `RegistryDatum` + increments version
+- CreateVestingSchedule → serializes `VestingDatum` for the new vesting UTxO (`vesting_datum_cbor_hex`)
+- ClaimVested (partial) → serializes updated `VestingDatum` with matured tranches removed
 - Deploy → serializes initial `RegistryDatum` (including `governance_script_hash`) / `TreasuryDatum`
 
 **`fos_agent/signing.py`** — PyCardano integration. Three capabilities:
@@ -350,14 +364,16 @@ HOST=0.0.0.0 python3 fos_ui/app.py   # expose to LAN
 Security defaults: binds to `127.0.0.1` (loopback), debug off, CSRF Origin check on all mutating routes. Set `HOST=0.0.0.0` to expose to LAN; set `FLASK_DEBUG=1` for development.
 
 Routes:
-- `GET  /`               — dashboard HTML (Active / History tab bar; member delegate buttons)
-- `GET  /api/state`      — full Quorum state JSON (includes `delegate` / `delegate_short` per member; proposals include `rationale_url`, `transfer_tokens`, `deposit_ada`)
-- `POST /api/propose`    — `{action_type, description, rationale_url?, tokens?[], deposit_ada, …}` → create-proposal tx
+- `GET  /`               — dashboard HTML (Active / History tab bar; member delegate buttons; vesting panel)
+- `GET  /api/state`      — full Quorum state JSON (includes `delegate` / `delegate_short` per member; proposals include `rationale_url`, `transfer_tokens`, `deposit_ada`; `vesting` key with schedules + claimable count)
+- `POST /api/propose`    — `{action_type, description, rationale_url?, tokens?[], tranches?[], deposit_ada, …}` → create-proposal tx; `action_type=CreateVesting` accepts `tranches: [{release_time_ms, ada}]`
 - `POST /api/vote`       — `{proposal_ref, approve}` → `UnsignedTransaction.summary()`
 - `POST /api/execute`    — `{proposal_ref}` → execute-proposal tx
 - `POST /api/expire`     — `{proposal_ref}` → expire-proposal tx
 - `POST /api/transfer`   — `{governance_ref}` → execute-transfer tx (ADA + native tokens)
 - `POST /api/delegate`   — `{member_key_hash, new_delegate}` → set-delegate tx (liquid democracy)
+- `POST /api/vesting/fund` — `{governance_ref, vesting_script_hash}` → create-vesting-schedule tx (funds from treasury)
+- `POST /api/vesting/claim` — `{vesting_ref, recipient_address}` → claim-vested tx (matured tranches)
 - `GET  /api/drep`       — agent DRep registration status (registered, voting power, delegator count)
 - `GET  /api/audit`      — last 50 audit log entries
 - `POST /api/executor/run` — `{proposal_ref}` → run executor agent for an Executed proposal
@@ -378,5 +394,8 @@ When a proposal reaches `Executed` status, `run_executor()` launches a second Cl
 1. Add any new shared types to `lib/fos_types.ak`.
 2. Create `validators/new_layer.ak`, importing from `fos_types`.
 3. If it reads another layer's state, use a reference input pattern (see `load_governance()` in `treasury.ak` or `load_registry()` in `governance.ak`).
-4. Add the new `ProposalAction` variant to `fos_types.ak` if governance needs to trigger it.
-5. Add the inline example to `INLINE_EXAMPLES` in `rag_ingest.py` so the agent can generate similar contracts.
+4. Add the new `ProposalAction` variant to `fos_types.ak` if governance needs to trigger it. Update `parse_proposal_action()` in `fos_agent/types.py` and `_encode_action()` in `fos_agent/datums.py`.
+5. If the treasury funds the new validator, add a new `TreasuryRedeemer` variant to `treasury.ak` (see `CreateVestingSchedule` as the pattern).
+6. Add Python mirrors to `fos_agent/types.py`, CBOR serializers to `fos_agent/datums.py`, and transaction builders to `fos_agent/transactions.py`.
+7. Expose state via `FOSState` in `fos_agent/chain.py` and add Flask routes in `fos_ui/app.py`.
+8. Add the inline example to `INLINE_EXAMPLES` in `rag_ingest.py` so the agent can generate similar contracts.

@@ -79,6 +79,33 @@ pub type ProposalAction {
   // Governance decisions that have no mandatory on-chain execution
   // (e.g. electing an officer, ratifying a policy).
   OffChainDecision { memo: ByteArray }
+  // Time-locked vesting schedule funded from the treasury.
+  // The treasury releases total_lovelace to a vesting UTxO; the recipient
+  // claims tranches as each release_time passes.
+  CreateVesting {
+    recipient: VerificationKeyHash,
+    tranches: List<VestingTranche>,
+    memo: ByteArray,
+  }
+}
+
+// ─── Vesting Layer ────────────────────────────────────────
+
+// A single time-locked tranche within a vesting schedule.
+pub type VestingTranche {
+  release_time: Int,  // POSIX ms — earliest moment this tranche can be claimed
+  lovelace: Int,      // ADA locked in this tranche
+}
+
+// Inline datum on the vesting UTxO at the vesting script address.
+pub type VestingDatum {
+  recipient: VerificationKeyHash,
+  // Remaining unclaimed tranches.  Claimed tranches are removed on each
+  // ClaimVested spend; the list shrinks until the UTxO is fully drained.
+  tranches: List<VestingTranche>,
+  // OutputReference of the Executed governance proposal that created this
+  // vesting schedule.  Provides a permanent on-chain audit link.
+  proposal_ref: OutputReference,
 }
 
 pub type VoteRecord {
