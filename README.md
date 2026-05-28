@@ -153,7 +153,7 @@ The agent reads current on-chain state, validates feasibility, recommends quorum
 
 ## Web dashboard — `fos_ui/`
 
-Flask app with CIP-30 wallet integration (Eternl, Nami, Lace, VESPR). The server never holds a private key — all signing happens in the browser wallet.
+Flask app with CIP-30 wallet integration (Eternl, Nami, Lace, VESPR). The server never holds a private key — all signing happens in the browser wallet. The UI is fully responsive: on tablet/mobile the proposals grid renders first and the sidebar collapses into a horizontal-scrolling info strip below it; modals become bottom sheets; forms stack vertically.
 
 ```bash
 python3 fos_ui/app.py          # mock mode → http://127.0.0.1:5000

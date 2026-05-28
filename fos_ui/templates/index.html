@@ -39,11 +39,6 @@
   <!-- ── Stats bar ─────────────────────────────────────── -->
   <div class="stats-bar">
     <div class="stat-item">
-      <span class="stat-label">Treasury</span>
-      <span class="stat-value green" id="stat-treasury">— ₳</span>
-    </div>
-    <div class="stat-divider"></div>
-    <div class="stat-item">
       <span class="stat-label">Active Proposals</span>
       <span class="stat-value" id="stat-active">—</span>
     </div>
@@ -67,8 +62,8 @@
   <!-- ── Main layout ────────────────────────────────────── -->
   <div class="layout">
 
-    <!-- Left sidebar -->
-    <aside class="sidebar">
+    <!-- Left sidebar — horizontal scroll strip on mobile -->
+    <aside class="sidebar" id="sidebar">
 
       <!-- Treasury card -->
       <div class="card" id="treasury-card">
@@ -141,6 +136,9 @@
           <div class="empty-state small">No activity yet</div>
         </div>
       </div>
+
+      <!-- Scroll hint — visible only on mobile sidebar strip -->
+      <div class="sidebar-scroll-hint" aria-hidden="true">scroll →</div>
 
     </aside>
 

@@ -62,7 +62,6 @@ function render(d) {
   }
 
   // Stats bar
-  setText('stat-treasury',  d.treasury.balance_ada + ' ₳');
   setText('stat-active',    d.governance.active);
   const action = d.governance.executable_now + d.governance.expirable_now + d.governance.awaiting_transfer;
   setText('stat-action',    action);

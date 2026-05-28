@@ -163,7 +163,7 @@ Three modules handle the full transaction lifecycle:
 
 ### 2.4 Web Dashboard — `fos_ui/`
 
-A Flask web application that renders the live on-chain state and lets a human operator build and submit transactions directly from the browser. It does not hold any private keys — signing happens locally in the user's Cardano wallet browser extension via the **CIP-30** standard.
+A Flask web application that renders the live on-chain state and lets a human operator build and submit transactions directly from the browser. It does not hold any private keys — signing happens locally in the user's Cardano wallet browser extension via the **CIP-30** standard. The UI is fully responsive: on tablet (≤900px) the proposals grid appears first and the sidebar becomes a horizontally-scrolling card strip; on mobile (≤640px) modals become bottom sheets, nav condenses to icon-only wallet button, forms stack vertically, and touch targets are minimum 40px. The `@media (hover: none)` rule makes the delegate button always visible on touch devices.
 
 **Pages and API routes:**
 
