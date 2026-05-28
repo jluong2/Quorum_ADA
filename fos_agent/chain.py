@@ -141,7 +141,13 @@ class BlockfrostClient:
     def get_utxos_at_script(self, script_hash: str) -> list[UTxO]:
         """Return all UTxOs locked at a script address, with inline datums."""
         address = self._script_hash_to_address(script_hash)
-        raw = self._get(f"addresses/{address}/utxos")
+        try:
+            raw = self._get(f"addresses/{address}/utxos")
+        except Exception as exc:
+            # Blockfrost returns 404 for addresses with no UTxOs — treat as empty.
+            if hasattr(exc, "response") and exc.response is not None and exc.response.status_code == 404:
+                return []
+            raise
         utxos = []
         for item in raw:
             lovelace = next(
@@ -180,11 +186,19 @@ class BlockfrostClient:
         return resp.json()
 
     def _script_hash_to_address(self, script_hash: str) -> str:
-        """Convert script hash to bech32 address via Blockfrost."""
-        if self._mock_mode:
-            return f"addr_test1w{script_hash[:20]}"
-        data = self._get(f"scripts/{script_hash}")
-        return data.get("address", "")
+        """Derive bech32 address from script hash using PyCardano (no Blockfrost call needed)."""
+        try:
+            from .signing import script_hash_to_address as _derive
+            network = "mainnet" if "mainnet" in self._base_url else "preprod"
+            return _derive(script_hash, network)
+        except Exception:
+            # Fallback: derive manually via PyCardano
+            try:
+                from pycardano import Address, Network, ScriptHash
+                network = Network.MAINNET if "mainnet" in self._base_url else Network.TESTNET
+                return str(Address(payment_part=ScriptHash(bytes.fromhex(script_hash)), network=network))
+            except Exception:
+                return f"addr_test1w{script_hash[:20]}"
 
     def _mock_response(self, path: str) -> dict | list:
         """Return plausible mock data for offline development."""
