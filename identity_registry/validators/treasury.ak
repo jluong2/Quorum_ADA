@@ -1,9 +1,10 @@
-use aiken/list
-use aiken/transaction.{
-  InlineDatum, OutputReference, ScriptContext, Spend, Transaction, find_input,
+use aiken/crypto.{VerificationKeyHash}
+use aiken/collection/list
+use cardano/address.{Script, VerificationKey}
+use cardano/assets
+use cardano/transaction.{
+  InlineDatum, Input, Output, OutputReference, Transaction, find_input,
 }
-use aiken/transaction/credential.{ScriptCredential, VerificationKeyCredential}
-use aiken/transaction/value
 use fos_types.{
   CreateVesting, Executed, GovernanceDatum, NativeToken, OffChainDecision,
   ProposalAction, RotateAdmin, TreasuryTransfer, UpdateRegistryMember,
@@ -51,20 +52,20 @@ pub type TreasuryRedeemer {
 //   - it is not at the expected governance script address
 //   - its datum is not a GovernanceDatum
 fn load_governance(
-  ctx: ScriptContext,
+  reference_inputs: List<Input>,
   governance_ref: OutputReference,
   governance_script_hash: ByteArray,
 ) -> GovernanceDatum {
   let governance_inputs =
     list.filter(
-      ctx.transaction.reference_inputs,
+      reference_inputs,
       fn(i) { i.output_reference == governance_ref },
     )
   expect [gov_input] = governance_inputs
 
   // Authenticate: verify the UTxO is locked by the real governance script.
   // Without this check, anyone could create a fake Executed UTxO.
-  expect ScriptCredential(script_hash) =
+  expect Script(script_hash) =
     gov_input.output.address.payment_credential
   expect script_hash == governance_script_hash
 
@@ -75,17 +76,17 @@ fn load_governance(
 
 // Sum all lovelace in outputs sent to a specific verification key.
 fn lovelace_to_recipient(
-  outputs: List<aiken/transaction.Output>,
-  recipient: aiken/crypto.VerificationKeyHash,
+  outputs: List<Output>,
+  recipient: VerificationKeyHash,
 ) -> Int {
   list.foldl(
     outputs,
     0,
     fn(o, acc) {
       when o.address.payment_credential is {
-        VerificationKeyCredential(pkh) ->
+        VerificationKey(pkh) ->
           if pkh == recipient {
-            acc + value.lovelace_of(o.value)
+            acc + assets.lovelace_of(o.value)
           } else {
             acc
           }
@@ -99,19 +100,19 @@ fn lovelace_to_recipient(
 // Sums the quantity of each token across all outputs to the recipient
 // and asserts each approved quantity is met.
 fn tokens_to_recipient(
-  outputs: List<aiken/transaction.Output>,
-  recipient: aiken/crypto.VerificationKeyHash,
+  outputs: List<Output>,
+  recipient: VerificationKeyHash,
   tokens: List<NativeToken>,
 ) -> Bool {
   let recipient_value =
     list.foldl(
       outputs,
-      value.zero(),
+      assets.zero,
       fn(o, acc) {
         when o.address.payment_credential is {
-          VerificationKeyCredential(pkh) ->
+          VerificationKey(pkh) ->
             if pkh == recipient {
-              value.merge(acc, o.value)
+              assets.merge(acc, o.value)
             } else {
               acc
             }
@@ -122,7 +123,7 @@ fn tokens_to_recipient(
   list.all(
     tokens,
     fn(t) {
-      value.quantity_of(recipient_value, t.policy_id, t.asset_name) >= t.quantity
+      assets.quantity_of(recipient_value, t.policy_id, t.asset_name) >= t.quantity
     },
   )
 }
@@ -130,15 +131,15 @@ fn tokens_to_recipient(
 // Verify the treasury's continuing output still holds all tokens it held
 // minus any tokens approved for transfer.
 fn treasury_conserves_tokens(
-  own_value: aiken/transaction/value.Value,
-  continuing_value: aiken/transaction/value.Value,
+  own_value,
+  continuing_value,
   tokens: List<NativeToken>,
 ) -> Bool {
   list.all(
     tokens,
     fn(t) {
-      let held_before = value.quantity_of(own_value, t.policy_id, t.asset_name)
-      let held_after  = value.quantity_of(continuing_value, t.policy_id, t.asset_name)
+      let held_before = assets.quantity_of(own_value, t.policy_id, t.asset_name)
+      let held_after  = assets.quantity_of(continuing_value, t.policy_id, t.asset_name)
       held_after >= held_before - t.quantity
     },
   )
@@ -146,19 +147,21 @@ fn treasury_conserves_tokens(
 
 // ─── Validator ────────────────────────────────────────────
 
-validator {
-  fn spend(
-    datum: TreasuryDatum,
+validator treasury {
+  spend(
+    datum: Option<TreasuryDatum>,
     redeemer: TreasuryRedeemer,
-    ctx: ScriptContext,
+    own_ref: OutputReference,
+    self: Transaction,
   ) -> Bool {
-    let Transaction { outputs, inputs, .. } = ctx.transaction
+    expect Some(datum) = datum
+    let Transaction { outputs, inputs, reference_inputs, .. } = self
 
     when redeemer is {
       ExecuteTransfer { governance_ref } -> {
         // ── 1. Load and authenticate the governance proposal ──
         let gov_datum =
-          load_governance(ctx, governance_ref, datum.governance_script_hash)
+          load_governance(reference_inputs, governance_ref, datum.governance_script_hash)
 
         // ── 2. Proposal must be fully executed ────────────────
         // (quorum passed + timelock elapsed — enforced by governance.ak)
@@ -184,7 +187,6 @@ validator {
         //   a) funds return to the same script address
         //   b) governance_script_hash is unchanged (no config hijack)
         //   c) max_transfer_lovelace is unchanged
-        expect Spend(own_ref) = ctx.purpose
         expect Some(own_input) = find_input(inputs, own_ref)
         let own_address = own_input.output.address
 
@@ -197,8 +199,8 @@ validator {
         // ── 7. Treasury conserves remaining ADA ──────────────────
         // Continuing output must hold at least treasury_in - approved_transfer.
         // Without this, the submitter could drain ADA to their change address.
-        let treasury_in_lovelace = value.lovelace_of(own_input.output.value)
-        expect value.lovelace_of(continuing.value) >= treasury_in_lovelace - lovelace
+        let treasury_in_lovelace = assets.lovelace_of(own_input.output.value)
+        expect assets.lovelace_of(continuing.value) >= treasury_in_lovelace - lovelace
 
         // ── 7a. Treasury conserves remaining native tokens ────────
         expect
@@ -214,7 +216,7 @@ validator {
       CreateVestingSchedule { governance_ref, vesting_script_hash } -> {
         // ── 1. Load and authenticate the governance proposal ──
         let gov_datum =
-          load_governance(ctx, governance_ref, datum.governance_script_hash)
+          load_governance(reference_inputs, governance_ref, datum.governance_script_hash)
 
         // ── 2. Proposal must be fully executed ────────────────
         expect gov_datum.status == Executed
@@ -233,7 +235,7 @@ validator {
             outputs,
             fn(o) {
               when o.address.payment_credential is {
-                ScriptCredential(sh) -> sh == vesting_script_hash
+                Script(sh) -> sh == vesting_script_hash
                 _ -> False
               }
             },
@@ -241,7 +243,7 @@ validator {
         expect [vesting_out] = vesting_outputs
 
         // ── 6. Vesting UTxO holds the full vesting amount ─────
-        expect value.lovelace_of(vesting_out.value) >= total_lovelace
+        expect assets.lovelace_of(vesting_out.value) >= total_lovelace
 
         // ── 7. Vesting datum matches the governance action ────
         expect InlineDatum(raw) = vesting_out.datum
@@ -251,7 +253,6 @@ validator {
         expect vesting_datum.proposal_ref == governance_ref
 
         // ── 8. Treasury continues with remaining ADA ──────────
-        expect Spend(own_ref) = ctx.purpose
         expect Some(own_input) = find_input(inputs, own_ref)
         let own_address = own_input.output.address
         let treasury_outputs =
@@ -260,17 +261,21 @@ validator {
         expect InlineDatum(raw2) = continuing.datum
         expect new_datum: TreasuryDatum = raw2
 
-        let treasury_in_lovelace = value.lovelace_of(own_input.output.value)
-        expect value.lovelace_of(continuing.value) >= treasury_in_lovelace - total_lovelace
+        let treasury_in_lovelace = assets.lovelace_of(own_input.output.value)
+        expect assets.lovelace_of(continuing.value) >= treasury_in_lovelace - total_lovelace
 
         new_datum.governance_script_hash == datum.governance_script_hash && new_datum.max_transfer_lovelace == datum.max_transfer_lovelace
       }
     }
   }
+
+  else(_) {
+    fail
+  }
 }
 
 // ─── Tests ────────────────────────────────────────────────
-// Pure logic tests.  Full integration (ScriptContext + reference inputs)
+// Pure logic tests.  Full integration (Transaction + reference inputs)
 // requires the off-chain testing framework (lucid / cardano-transaction-lib).
 
 test transfer_within_cap_is_allowed() {
@@ -309,7 +314,7 @@ test expired_proposal_cannot_release_funds() {
 
 test treasury_transfer_action_is_recognized() {
   let action: ProposalAction =
-    TreasuryTransfer { recipient: #"aa", lovelace: 2_000_000, memo: #"salary" }
+    TreasuryTransfer { recipient: #"aa", lovelace: 2_000_000, memo: #"", tokens: [] }
   when action is {
     TreasuryTransfer { lovelace, .. } -> lovelace == 2_000_000
     _ -> False
@@ -318,7 +323,7 @@ test treasury_transfer_action_is_recognized() {
 
 test non_treasury_action_is_rejected() {
   // OffChainDecision cannot trigger a treasury release
-  let action: ProposalAction = OffChainDecision { memo: #"just a vote" }
+  let action: ProposalAction = OffChainDecision { memo: #"" }
   when action is {
     TreasuryTransfer { .. } -> False
     _ -> True
@@ -396,13 +401,12 @@ test treasury_lovelace_exact_minimum_is_allowed() {
 }
 
 // ─── Native token tests ───────────────────────────────────
-// (Pure logic — ScriptContext tests require off-chain framework)
+// (Pure logic — Transaction tests require off-chain framework)
 
 test empty_token_list_always_passes() {
-  // When tokens is empty, tokens_to_recipient trivially passes.
-  // Simulated: all([], _) = True
+  // all([], _) = True regardless of predicate (vacuous truth).
   let tokens: List<NativeToken> = []
-  list.all(tokens, fn(_) { False }) == False && list.all(tokens, fn(_) { True })
+  list.all(tokens, fn(_) { False }) && list.all(tokens, fn(_) { True })
 }
 
 test token_quantity_check_passes_when_sufficient() {
@@ -436,7 +440,7 @@ test token_conservation_fails_when_drained() {
 test treasury_transfer_with_empty_tokens_matches_old_behaviour() {
   // A TreasuryTransfer with tokens=[] should pattern-match identically.
   let action: ProposalAction =
-    TreasuryTransfer { recipient: #"aa", lovelace: 2_000_000, memo: #"grant", tokens: [] }
+    TreasuryTransfer { recipient: #"aa", lovelace: 2_000_000, memo: #"", tokens: [] }
   when action is {
     TreasuryTransfer { lovelace, tokens, .. } -> lovelace == 2_000_000 && tokens == []
     _ -> False
@@ -448,8 +452,8 @@ test treasury_transfer_with_native_tokens() {
     TreasuryTransfer {
       recipient: #"aa",
       lovelace: 0,
-      memo: #"token grant",
-      tokens: [NativeToken { policy_id: #"deadbeef", asset_name: #"QRML", quantity: 100 }],
+      memo: #"",
+      tokens: [NativeToken { policy_id: #"deadbeef", asset_name: #"51524d4c", quantity: 100 }],
     }
   when action is {
     TreasuryTransfer { tokens, .. } -> list.length(tokens) == 1
@@ -467,7 +471,7 @@ test create_vesting_action_is_recognized() {
         fos_types.VestingTranche { release_time: 1000, lovelace: 2_000_000 },
         fos_types.VestingTranche { release_time: 2000, lovelace: 3_000_000 },
       ],
-      memo: #"vesting schedule",
+      memo: #"",
     }
   when action is {
     CreateVesting { recipient, tranches, .. } ->

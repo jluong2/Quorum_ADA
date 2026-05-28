@@ -3,7 +3,7 @@
 // so the type system is consistent across the entire stack.
 
 use aiken/crypto.{VerificationKeyHash}
-use aiken/transaction.{OutputReference}
+use cardano/transaction.{OutputReference}
 
 // ─── Identity Layer ───────────────────────────────────────
 

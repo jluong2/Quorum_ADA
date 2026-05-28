@@ -1,12 +1,11 @@
 use aiken/crypto.{VerificationKeyHash}
 use aiken/interval.{Finite}
-use aiken/list
-use aiken/transaction.{
-  InlineDatum, Output, OutputReference, ScriptContext, Spend, Transaction,
-  find_input,
+use aiken/collection/list
+use cardano/address.{VerificationKey}
+use cardano/assets
+use cardano/transaction.{
+  InlineDatum, Input, Output, OutputReference, Transaction, find_input,
 }
-use aiken/transaction/credential.{VerificationKeyCredential}
-use aiken/transaction/value
 use fos_types.{
   Active, Admin, Executed, Expired, GovernanceDatum, Member, Observer, ProposalAction,
   RegistryDatum, RegistryMember, Role, RotateAdmin, Suspended, Treasurer, TreasuryTransfer,
@@ -122,13 +121,13 @@ fn count_weighted_yes(
 }
 
 fn load_registry(
-  ctx: ScriptContext,
+  reference_inputs: List<Input>,
   registry_ref: OutputReference,
   expected_version: Int,
 ) -> RegistryDatum {
   let registry_inputs =
     list.filter(
-      ctx.transaction.reference_inputs,
+      reference_inputs,
       fn(i) { i.output_reference == registry_ref },
     )
   expect [reg_input] = registry_inputs
@@ -174,17 +173,18 @@ fn supermajority_met(yes_score: Int, max_score: Int) -> Bool {
   yes_score * 3 >= max_score * 2
 }
 
-fn tx_lower_bound(ctx: ScriptContext) -> Int {
-  expect Finite(lower) =
-    ctx.transaction.validity_range.lower_bound.bound_type
+fn tx_lower_bound(self: Transaction) -> Int {
+  expect Finite(lower) = self.validity_range.lower_bound.bound_type
   lower
 }
 
 // Returns (new_datum, continuing_lovelace) for the single continuing output
 // at the governance script address.
-fn continuing_output_info(ctx: ScriptContext) -> (GovernanceDatum, Int) {
-  let Transaction { outputs, inputs, .. } = ctx.transaction
-  expect Spend(own_ref) = ctx.purpose
+fn continuing_output_info(
+  self: Transaction,
+  own_ref: OutputReference,
+) -> (GovernanceDatum, Int) {
+  let Transaction { outputs, inputs, .. } = self
   expect Some(own_input) = find_input(inputs, own_ref)
   let own_address = own_input.output.address
   let script_outputs =
@@ -192,14 +192,13 @@ fn continuing_output_info(ctx: ScriptContext) -> (GovernanceDatum, Int) {
   expect [continuing] = script_outputs
   expect InlineDatum(raw) = continuing.datum
   expect new_datum: GovernanceDatum = raw
-  (new_datum, value.lovelace_of(continuing.value))
+  (new_datum, assets.lovelace_of(continuing.value))
 }
 
-fn own_input_lovelace(ctx: ScriptContext) -> Int {
-  let Transaction { inputs, .. } = ctx.transaction
-  expect Spend(own_ref) = ctx.purpose
+fn own_input_lovelace(self: Transaction, own_ref: OutputReference) -> Int {
+  let Transaction { inputs, .. } = self
   expect Some(own_input) = find_input(inputs, own_ref)
-  value.lovelace_of(own_input.output.value)
+  assets.lovelace_of(own_input.output.value)
 }
 
 // Sum lovelace paid to a specific verification key hash across all outputs.
@@ -209,9 +208,9 @@ fn lovelace_to_pkh(outputs: List<Output>, pkh: VerificationKeyHash) -> Int {
     0,
     fn(o, acc) {
       when o.address.payment_credential is {
-        VerificationKeyCredential(key) ->
+        VerificationKey(key) ->
           if key == pkh {
-            acc + value.lovelace_of(o.value)
+            acc + assets.lovelace_of(o.value)
           } else {
             acc
           }
@@ -223,25 +222,27 @@ fn lovelace_to_pkh(outputs: List<Output>, pkh: VerificationKeyHash) -> Int {
 
 // ─── Validator ────────────────────────────────────────────
 
-validator {
-  fn spend(
-    datum: GovernanceDatum,
+validator governance {
+  spend(
+    datum: Option<GovernanceDatum>,
     redeemer: GovernanceRedeemer,
-    ctx: ScriptContext,
+    own_ref: OutputReference,
+    self: Transaction,
   ) -> Bool {
-    let Transaction { extra_signatories, .. } = ctx.transaction
+    expect Some(datum) = datum
+    let Transaction { extra_signatories, .. } = self
 
     when redeemer is {
       CastVote { voter, approve } -> {
         expect datum.status == Voting
 
-        let now = tx_lower_bound(ctx)
+        let now = tx_lower_bound(self)
         expect now <= datum.vote_deadline
 
         expect list.has(extra_signatories, voter)
 
         let registry =
-          load_registry(ctx, datum.registry_ref, datum.registry_version)
+          load_registry(self.reference_inputs, datum.registry_ref, datum.registry_version)
         expect Some(reg_member) =
           list.find(registry.members, fn(m) { m.key_hash == voter })
         expect reg_member.status == Active
@@ -249,8 +250,8 @@ validator {
 
         expect !already_voted(datum.votes, voter)
 
-        let (new_datum, cont_lovelace) = continuing_output_info(ctx)
-        let in_lovelace = own_input_lovelace(ctx)
+        let (new_datum, cont_lovelace) = continuing_output_info(self, own_ref)
+        let in_lovelace = own_input_lovelace(self, own_ref)
         let new_vote = VoteRecord { voter: voter, approve: approve }
 
         // Deposit must be preserved in the continuing output during voting.
@@ -271,11 +272,11 @@ validator {
       Execute -> {
         expect datum.status == Voting
 
-        let now = tx_lower_bound(ctx)
+        let now = tx_lower_bound(self)
         expect now >= datum.execute_after
 
         let registry =
-          load_registry(ctx, datum.registry_ref, datum.registry_version)
+          load_registry(self.reference_inputs, datum.registry_ref, datum.registry_version)
         let yes_score = count_weighted_yes(datum.votes, registry.members)
         expect yes_score >= datum.quorum
 
@@ -287,9 +288,9 @@ validator {
             max_possible_yes_score(registry.members),
           )
 
-        let Transaction { outputs, .. } = ctx.transaction
-        let (new_datum, cont_lovelace) = continuing_output_info(ctx)
-        let in_lovelace = own_input_lovelace(ctx)
+        let Transaction { outputs, .. } = self
+        let (new_datum, cont_lovelace) = continuing_output_info(self, own_ref)
+        let in_lovelace = own_input_lovelace(self, own_ref)
 
         // Deposit is refunded to the proposer on a successful Execute.
         expect lovelace_to_pkh(outputs, datum.proposer) >= datum.deposit
@@ -312,16 +313,16 @@ validator {
       Expire -> {
         expect datum.status == Voting
 
-        let now = tx_lower_bound(ctx)
+        let now = tx_lower_bound(self)
         expect now > datum.vote_deadline
 
         let registry =
-          load_registry(ctx, datum.registry_ref, datum.registry_version)
+          load_registry(self.reference_inputs, datum.registry_ref, datum.registry_version)
         let yes_score = count_weighted_yes(datum.votes, registry.members)
         expect yes_score < datum.quorum
 
-        let (new_datum, cont_lovelace) = continuing_output_info(ctx)
-        let in_lovelace = own_input_lovelace(ctx)
+        let (new_datum, cont_lovelace) = continuing_output_info(self, own_ref)
+        let in_lovelace = own_input_lovelace(self, own_ref)
 
         // Deposit stays locked on expiry — no refund for failed proposals.
         expect cont_lovelace >= in_lovelace
@@ -338,6 +339,10 @@ validator {
           && new_datum.deposit == datum.deposit
       }
     }
+  }
+
+  else(_) {
+    fail
   }
 }
 
@@ -646,19 +651,19 @@ test rotate_admin_requires_supermajority() {
 test large_treasury_transfer_requires_supermajority() {
   // 11 ADA > 10 ADA threshold
   action_requires_supermajority(
-    TreasuryTransfer { recipient: #"aa", lovelace: 11_000_000, memo: #"" },
+    TreasuryTransfer { recipient: #"aa", lovelace: 11_000_000, memo: #"", tokens: [] },
   )
 }
 
 test small_treasury_transfer_does_not_require_supermajority() {
   // 5 ADA ≤ 10 ADA threshold
   !action_requires_supermajority(
-    TreasuryTransfer { recipient: #"aa", lovelace: 5_000_000, memo: #"" },
+    TreasuryTransfer { recipient: #"aa", lovelace: 5_000_000, memo: #"", tokens: [] },
   )
 }
 
 test offchain_decision_does_not_require_supermajority() {
-  !action_requires_supermajority(fos_types.OffChainDecision { memo: #"adopt policy" })
+  !action_requires_supermajority(fos_types.OffChainDecision { memo: #"" })
 }
 
 test max_possible_yes_score_sums_active_members() {
@@ -761,6 +766,6 @@ test expire_deposit_stays_locked() {
 
 test lovelace_to_pkh_sums_correctly() {
   // Direct test of the lovelace_to_pkh helper via the min_deposit constant.
-  // (Full ScriptContext test requires off-chain framework.)
+  // (Full Transaction test requires off-chain framework.)
   min_deposit > 0
 }

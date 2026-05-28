@@ -1,10 +1,10 @@
 use aiken/interval.{Finite}
-use aiken/list
-use aiken/transaction.{
-  InlineDatum, OutputReference, ScriptContext, Spend, Transaction, find_input,
+use aiken/collection/list
+use cardano/address.{VerificationKey}
+use cardano/assets
+use cardano/transaction.{
+  InlineDatum, OutputReference, Transaction, find_input,
 }
-use aiken/transaction/credential.{VerificationKeyCredential}
-use aiken/transaction/value
 use fos_types.{VestingDatum, VestingTranche}
 
 // ─── Redeemer ─────────────────────────────────────────────
@@ -31,14 +31,16 @@ fn sum_lovelace(tranches: List<VestingTranche>) -> Int {
 
 // ─── Validator ────────────────────────────────────────────
 
-validator {
-  fn spend(
-    datum: VestingDatum,
+validator vesting {
+  spend(
+    datum: Option<VestingDatum>,
     redeemer: VestingRedeemer,
-    ctx: ScriptContext,
+    own_ref: OutputReference,
+    self: Transaction,
   ) -> Bool {
+    expect Some(datum) = datum
     let Transaction { inputs, outputs, validity_range, extra_signatories, .. } =
-      ctx.transaction
+      self
 
     when redeemer is {
       ClaimVested -> {
@@ -67,9 +69,9 @@ validator {
             0,
             fn(o, acc) {
               when o.address.payment_credential is {
-                VerificationKeyCredential(pkh) ->
+                VerificationKey(pkh) ->
                   if pkh == datum.recipient {
-                    acc + value.lovelace_of(o.value)
+                    acc + assets.lovelace_of(o.value)
                   } else {
                     acc
                   }
@@ -81,7 +83,6 @@ validator {
 
         // ── 6. If tranches remain, continuing output is required ─
         if list.length(remaining) > 0 {
-          expect Spend(own_ref) = ctx.purpose
           expect Some(own_input) = find_input(inputs, own_ref)
           let own_address = own_input.output.address
 
@@ -98,7 +99,7 @@ validator {
 
           // Continuing output must hold at least the remaining locked lovelace.
           let remaining_amount = sum_lovelace(remaining)
-          expect value.lovelace_of(continuing.value) >= remaining_amount
+          expect assets.lovelace_of(continuing.value) >= remaining_amount
 
           True
         } else {
@@ -110,6 +111,10 @@ validator {
       // Not implemented: vesting schedules are irrevocable once funded.
       CancelVesting -> False
     }
+  }
+
+  else(_) {
+    fail
   }
 }
 

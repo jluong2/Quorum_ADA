@@ -1,10 +1,11 @@
-use aiken/list
-use aiken/transaction.{InlineDatum, ScriptContext, Spend, Transaction, find_input}
-use aiken/transaction/credential.{ScriptCredential}
+use aiken/crypto.{VerificationKeyHash}
+use aiken/collection/list
+use cardano/address.{Script}
+use cardano/transaction.{InlineDatum, OutputReference, Transaction, find_input}
 use fos_types.{
-  Executed, GovernanceDatum, Member, MemberStatus, Observer, RegistryDatum,
-  RegistryMember, Role, RotateAdmin, Suspended, Treasurer, UpdateRegistryMember,
-  Active, Admin,
+  Active, Admin, Executed, GovernanceDatum, Member, MemberStatus, Observer,
+  RegistryDatum, RegistryMember, Role, RotateAdmin, Suspended, Treasurer,
+  UpdateRegistryMember,
 }
 
 // ─── Actions ──────────────────────────────────────────────
@@ -15,19 +16,19 @@ use fos_types.{
 
 pub type RegistryAction {
   AddMember { new_member: RegistryMember }
-  RemoveMember { target_key: fos_types.VerificationKeyHash }
+  RemoveMember { target_key: VerificationKeyHash }
   UpdateMember {
-    target_key: fos_types.VerificationKeyHash,
+    target_key: VerificationKeyHash,
     new_role: Role,
     new_status: MemberStatus,
   }
-  TransferAdmin { new_admin: fos_types.VerificationKeyHash }
+  TransferAdmin { new_admin: VerificationKeyHash }
   GovernanceApproval
   // Self-service delegation: signed by the member; no admin key or governance required.
   // Incrementing version invalidates open proposals — delegation changes affect quorum.
   SetDelegate {
-    key_hash: fos_types.VerificationKeyHash,
-    new_delegate: Option<fos_types.VerificationKeyHash>,
+    key_hash: VerificationKeyHash,
+    new_delegate: Option<VerificationKeyHash>,
   }
 }
 
@@ -35,21 +36,21 @@ pub type RegistryAction {
 
 fn member_exists(
   members: List<RegistryMember>,
-  key: fos_types.VerificationKeyHash,
+  key: VerificationKeyHash,
 ) -> Bool {
   list.any(members, fn(m) { m.key_hash == key })
 }
 
 fn remove_member_by_key(
   members: List<RegistryMember>,
-  key: fos_types.VerificationKeyHash,
+  key: VerificationKeyHash,
 ) -> List<RegistryMember> {
   list.filter(members, fn(m) { m.key_hash != key })
 }
 
 fn update_member_by_key(
   members: List<RegistryMember>,
-  key: fos_types.VerificationKeyHash,
+  key: VerificationKeyHash,
   new_role: Role,
   new_status: MemberStatus,
 ) -> List<RegistryMember> {
@@ -67,8 +68,8 @@ fn update_member_by_key(
 
 fn update_delegate(
   members: List<RegistryMember>,
-  key: fos_types.VerificationKeyHash,
-  new_delegate: Option<fos_types.VerificationKeyHash>,
+  key: VerificationKeyHash,
+  new_delegate: Option<VerificationKeyHash>,
 ) -> List<RegistryMember> {
   list.map(
     members,
@@ -84,16 +85,17 @@ fn update_delegate(
 
 // ─── Validator ────────────────────────────────────────────
 
-validator {
-  fn spend(
-    datum: RegistryDatum,
+validator identity_registry {
+  spend(
+    datum: Option<RegistryDatum>,
     action: RegistryAction,
-    ctx: ScriptContext,
+    own_ref: OutputReference,
+    self: Transaction,
   ) -> Bool {
+    expect Some(datum) = datum
     let Transaction { extra_signatories, outputs, inputs, reference_inputs, .. } =
-      ctx.transaction
+      self
 
-    expect Spend(own_ref) = ctx.purpose
     expect Some(own_input) = find_input(inputs, own_ref)
     let own_address = own_input.output.address
 
@@ -117,7 +119,7 @@ validator {
             reference_inputs,
             fn(inp) {
               when inp.output.address.payment_credential is {
-                ScriptCredential(hash) -> hash == datum.governance_script_hash
+                Script(hash) -> hash == datum.governance_script_hash
                 _ -> False
               }
             },
@@ -210,6 +212,10 @@ validator {
           && new_datum.admin == datum.admin
       }
     }
+  }
+
+  else(_) {
+    fail
   }
 }
 

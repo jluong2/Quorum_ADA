@@ -1,8 +1,18 @@
-[package]
-name = "identity_registry"
+name = "jluong/quorum"
 version = "0.0.0"
+compiler = "v1.1.22"
+plutus = "v3"
 license = "Apache-2.0"
-description = "Identity registry validator — foundation layer of the Cardano Financial OS"
+description = "Quorum — on-chain governance protocol for Cardano"
 
-[dependencies]
-aiken-lang/stdlib = { version = "~>2.1.0", source = "github" }
+[repository]
+user = "jluong"
+project = "Quorum_ADA"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.1.0"
+source = "github"
+
+[config]
