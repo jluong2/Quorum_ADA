@@ -183,7 +183,7 @@ def build_and_sign(
     witness_set = TransactionWitnessSet(
         vkey_witnesses=[VerificationKeyWitness(vk, sig)]
     )
-    tx = Transaction(body=body, witness_set=witness_set, valid=True)
+    tx = Transaction(transaction_body=body, transaction_witness_set=witness_set, valid=True)
     return tx.to_cbor_hex()
 
 
@@ -200,8 +200,16 @@ def load_plutus_json() -> dict:
 
 
 def extract_validators(plutus: dict) -> dict[str, dict]:
-    """Return {title: {hash, compiledCode}} from plutus.json."""
-    return {v["title"]: v for v in plutus.get("validators", [])}
+    """Return {short_name: {hash, compiledCode}} keyed by spend validators only."""
+    result = {}
+    for v in plutus.get("validators", []):
+        title = v["title"]
+        if not title.endswith(".spend"):
+            continue
+        # "governance.governance.spend" → "governance"
+        short = title.split(".")[0]
+        result[short] = v
+    return result
 
 
 # ─── Deploy steps ──────────────────────────────────────────
@@ -293,7 +301,7 @@ def step4_deploy_registry(
     registry_output = TransactionOutput(
         Address.from_primitive(registry_address),
         REGISTRY_MIN_ADA,
-        datum=RawPlutusData(cbor_primitive=cbor2.loads(datum_bytes)),
+        datum=RawPlutusData(cbor2.loads(datum_bytes)),
     )
     change_output = TransactionOutput(
         Address.from_primitive(deployer_addr),
@@ -343,7 +351,7 @@ def step5_deploy_treasury(
     treasury_output = TransactionOutput(
         Address.from_primitive(treasury_address),
         TREASURY_FUNDING,
-        datum=RawPlutusData(cbor_primitive=cbor2.loads(datum_bytes)),
+        datum=RawPlutusData(cbor2.loads(datum_bytes)),
     )
     change_output = TransactionOutput(
         Address.from_primitive(deployer_addr),
@@ -423,8 +431,16 @@ def main():
     )
     print(f"  Registry UTxO: {registry_ref}")
 
-    # Refresh UTxOs after first tx
-    deployer_utxos = get_utxos(deployer_addr)
+    # Poll until the change UTxO from the registry tx is indexed at the deployer address.
+    registry_tx_hash = registry_ref.split("#")[0]
+    print("  Waiting for change UTxO to be indexed…", end="", flush=True)
+    for _ in range(24):
+        time.sleep(5)
+        print(".", end="", flush=True)
+        deployer_utxos = get_utxos(deployer_addr)
+        if any(u["tx_hash"] == registry_tx_hash for u in deployer_utxos):
+            break
+    print(" ready!")
 
     treasury_ref = step5_deploy_treasury(
         validators=validators,

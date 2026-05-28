@@ -174,14 +174,19 @@ Dashboard security defaults: binds to `127.0.0.1` (loopback only), debug mode of
 ## Full deployment
 
 ```bash
+# 0. Generate a deployer key pair (first time only)
+python3 scripts/keygen.py
+# Prints your address — fund it from https://docs.cardano.org/cardano-testnets/tools/faucet/
+# Also prints DEPLOY_SIGNING_KEY and DEPLOY_KEY_HASH — copy them
+
 # 1. Compile the contracts
 cd identity_registry && aiken build   # produces plutus.json
 
 # 2. Deploy to preprod testnet
 export BLOCKFROST_PROJECT_ID="preprod..."
-export DEPLOY_SIGNING_KEY="<32-byte Ed25519 hex>"
-export DEPLOY_KEY_HASH="<vkey hash>"
-export DEPLOY_COLLATERAL_REF="<txhash#index>"
+export DEPLOY_SIGNING_KEY="<from keygen.py>"
+export DEPLOY_KEY_HASH="<from keygen.py>"
+export DEPLOY_COLLATERAL_REF="<txhash#index of any funded UTxO>"
 python3 scripts/deploy.py
 # Prints REGISTRY/GOVERNANCE/TREASURY script hashes — copy them
 

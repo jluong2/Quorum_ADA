@@ -26,3 +26,8 @@ npm-debug.log*
 .idea/
 .vscode/
 *.swp
+
+# Deployment keys (never commit private keys)
+*.skey
+deploy.vkey
+deploy.addr

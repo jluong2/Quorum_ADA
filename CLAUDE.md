@@ -370,21 +370,32 @@ python3 scripts/verify.py             # publish (requires DEPLOY_* env vars + re
 
 Guards against publishing mock hashes — exits with an error if `plutus.json` contains placeholder values from the test fixture.
 
-### Preprod deployment (`scripts/deploy.py`)
+### Preprod deployment (`scripts/deploy.py` + `scripts/keygen.py`)
 
-Reads `identity_registry/plutus.json`, derives script addresses, and submits two deployment transactions:
+**`scripts/keygen.py`** — generates a fresh Ed25519 key pair for the deployer wallet. Run this once before the first deployment. Writes `deploy.skey` (private key — never commit), `deploy.vkey`, and `deploy.addr` to the repo root, and prints the `DEPLOY_SIGNING_KEY` / `DEPLOY_KEY_HASH` env vars ready to copy. All three files are excluded by `.gitignore`.
+
+**`scripts/deploy.py`** — reads `identity_registry/plutus.json`, derives script addresses, and submits two deployment transactions:
 
 1. Registry UTxO — `RegistryDatum` with deployer as founding Admin and `governance_script_hash` pre-loaded (both hashes are deterministic from compiled code and can be computed before either contract is deployed)
 2. Treasury UTxO — `TreasuryDatum` with `governance_script_hash` + ADA funding
 
-```bash
-export BLOCKFROST_PROJECT_ID="preprod..."
-export DEPLOY_SIGNING_KEY="<32-byte Ed25519 hex>"
-export DEPLOY_KEY_HASH="<vkey hash hex>"
-export DEPLOY_COLLATERAL_REF="<txhash#index>"
+After the registry tx confirms, `deploy.py` polls Blockfrost until the change UTxO is indexed before submitting the treasury tx (avoids a race condition where the second tx arrives before the first is fully indexed).
 
+```bash
+# 0. Generate deployer key pair (once)
+python3 scripts/keygen.py
+#    → prints DEPLOY_SIGNING_KEY and DEPLOY_KEY_HASH
+#    → prints address to fund from https://docs.cardano.org/cardano-testnets/tools/faucet/
+
+# 1. Set env vars
+export BLOCKFROST_PROJECT_ID="preprod..."
+export DEPLOY_SIGNING_KEY="<from keygen.py output>"
+export DEPLOY_KEY_HASH="<from keygen.py output>"
+export DEPLOY_COLLATERAL_REF="<txhash#index of any funded UTxO>"
+
+# 2. Build + deploy
 cd identity_registry && aiken build   # produces plutus.json
-python3 scripts/deploy.py             # deploys + prints env vars
+python3 scripts/deploy.py             # deploys + prints FOS_* env vars
 ```
 
 ### FOS Web UI (`fos_ui/`)
