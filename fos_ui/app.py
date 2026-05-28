@@ -28,6 +28,7 @@ from fos_agent import config
 from fos_agent.chain import BlockfrostClient, FOSState, mock_fos_state, read_fos_state
 from fos_agent.executor import run_executor
 from fos_agent.transactions import (
+    build_add_member_tx,
     build_cast_vote_tx,
     build_claim_vesting_tx,
     build_create_proposal_tx,
@@ -35,6 +36,7 @@ from fos_agent.transactions import (
     build_execute_proposal_tx,
     build_expire_proposal_tx,
     build_execute_transfer_tx,
+    build_remove_member_tx,
     build_set_delegate_tx,
 )
 from fos_agent.types import (
@@ -522,6 +524,55 @@ def api_delegate():
             registry_datum=s.registry,
             member_key_hash=member_key_hash,
             new_delegate=new_delegate,
+            registry_script_hash=config.REGISTRY_SCRIPT_HASH,
+        )
+        return jsonify({"ok": True, "summary": tx.summary(), "inputs": tx.inputs})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/member/add", methods=["POST"])
+def api_add_member():
+    """Build an AddMember UnsignedTransaction (admin-signed, no governance vote)."""
+    body = request.json or {}
+    key_hash = body.get("key_hash", "").strip()
+    role_str = body.get("role", "Member").strip()
+    role_map = {"Admin": ROLE_ADMIN, "Member": ROLE_MEMBER,
+                "Observer": ROLE_OBSERVER, "Treasurer": ROLE_TREASURER}
+    role = role_map.get(role_str, ROLE_MEMBER)
+
+    if not key_hash:
+        return jsonify({"ok": False, "error": "key_hash required"}), 400
+
+    try:
+        s = _get_state()
+        tx = build_add_member_tx(
+            registry_utxo=s.registry_utxo,
+            registry_datum=s.registry,
+            new_key_hash=key_hash,
+            role=role,
+            registry_script_hash=config.REGISTRY_SCRIPT_HASH,
+        )
+        return jsonify({"ok": True, "summary": tx.summary(), "inputs": tx.inputs})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/member/remove", methods=["POST"])
+def api_remove_member():
+    """Build a RemoveMember UnsignedTransaction (admin-signed, no governance vote)."""
+    body = request.json or {}
+    key_hash = body.get("key_hash", "").strip()
+
+    if not key_hash:
+        return jsonify({"ok": False, "error": "key_hash required"}), 400
+
+    try:
+        s = _get_state()
+        tx = build_remove_member_tx(
+            registry_utxo=s.registry_utxo,
+            registry_datum=s.registry,
+            target_key_hash=key_hash,
             registry_script_hash=config.REGISTRY_SCRIPT_HASH,
         )
         return jsonify({"ok": True, "summary": tx.summary(), "inputs": tx.inputs})

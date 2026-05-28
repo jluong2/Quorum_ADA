@@ -569,6 +569,136 @@ def build_create_proposal_tx(
     )
 
 
+def build_add_member_tx(
+    registry_utxo: UTxO,
+    registry_datum: RegistryDatum,
+    new_key_hash: str,
+    role: int = ROLE_MEMBER,
+    registry_script_hash: str = "",
+) -> UnsignedTransaction:
+    """
+    Admin action: add a new member to the registry.
+
+    Signed by the current admin key — no governance vote required.
+    The new member is prepended to the members list (matches on-chain behaviour).
+    Increments registry version, invalidating any open proposals.
+    """
+    assert not registry_datum.find_member(new_key_hash), \
+        f"Member {new_key_hash[:12]}… already exists in registry"
+
+    import time as _time
+    new_member = RegistryMember(
+        key_hash=new_key_hash,
+        role=role,
+        joined_at=int(_time.time() * 1000),
+        status=STATUS_ACTIVE,
+    )
+    new_registry = dataclasses.replace(
+        registry_datum,
+        members=[new_member] + list(registry_datum.members),
+        version=registry_datum.version + 1,
+    )
+
+    net = _network_from_config()
+    registry_address = (
+        _script_address(registry_script_hash, net)
+        if registry_script_hash
+        else registry_utxo.ref.split("#")[0]
+    )
+
+    try:
+        from .datums import registry_datum_cbor_hex
+        new_datum_hex = registry_datum_cbor_hex(new_registry)
+    except (ImportError, AssertionError):
+        new_datum_hex = "<registry_datum_cbor_hex>"
+
+    role_names = {ROLE_ADMIN: "Admin", ROLE_MEMBER: "Member",
+                  ROLE_OBSERVER: "Observer", ROLE_TREASURER: "Treasurer"}
+
+    return UnsignedTransaction(
+        description=f"AddMember {new_key_hash[:16]}… as {role_names.get(role, role)}",
+        inputs=[registry_utxo.ref],
+        reference_inputs=[],
+        outputs=[
+            TxOutput(
+                address=registry_address,
+                lovelace=registry_utxo.lovelace,
+                datum_hex=new_datum_hex,
+            ),
+        ],
+        redeemers=[Redeemer(
+            input_ref=registry_utxo.ref,
+            data={"constructor": 0, "fields": [  # AddMember variant 0
+                {"constructor": 0, "fields": [
+                    {"bytes": new_key_hash},
+                    {"constructor": role, "fields": []},
+                    {"int": new_member.joined_at},
+                    {"constructor": STATUS_ACTIVE, "fields": []},
+                    {"constructor": 1, "fields": []},  # delegate: None
+                ]},
+            ]},
+        )],
+        required_signers=[registry_datum.admin],
+        metadata={"msg": [f"Quorum: add member {new_key_hash[:16]}…"]},
+    )
+
+
+def build_remove_member_tx(
+    registry_utxo: UTxO,
+    registry_datum: RegistryDatum,
+    target_key_hash: str,
+    registry_script_hash: str = "",
+) -> UnsignedTransaction:
+    """
+    Admin action: remove a member from the registry.
+
+    Signed by the current admin key — no governance vote required.
+    Increments registry version, invalidating any open proposals.
+    """
+    assert registry_datum.find_member(target_key_hash), \
+        f"Member {target_key_hash[:12]}… not found in registry"
+
+    new_registry = dataclasses.replace(
+        registry_datum,
+        members=[m for m in registry_datum.members if m.key_hash != target_key_hash],
+        version=registry_datum.version + 1,
+    )
+
+    net = _network_from_config()
+    registry_address = (
+        _script_address(registry_script_hash, net)
+        if registry_script_hash
+        else registry_utxo.ref.split("#")[0]
+    )
+
+    try:
+        from .datums import registry_datum_cbor_hex
+        new_datum_hex = registry_datum_cbor_hex(new_registry)
+    except (ImportError, AssertionError):
+        new_datum_hex = "<registry_datum_cbor_hex>"
+
+    return UnsignedTransaction(
+        description=f"RemoveMember {target_key_hash[:16]}…",
+        inputs=[registry_utxo.ref],
+        reference_inputs=[],
+        outputs=[
+            TxOutput(
+                address=registry_address,
+                lovelace=registry_utxo.lovelace,
+                datum_hex=new_datum_hex,
+            ),
+        ],
+        redeemers=[Redeemer(
+            input_ref=registry_utxo.ref,
+            data={"constructor": 1, "fields": [  # RemoveMember variant 1
+                {"bytes": target_key_hash},
+            ]},
+        )],
+        required_signers=[registry_datum.admin],
+        metadata={"msg": [f"Quorum: remove member {target_key_hash[:16]}…"]},
+    )
+
+
 def build_set_delegate_tx(
     registry_utxo: UTxO,
     registry_datum: RegistryDatum,
