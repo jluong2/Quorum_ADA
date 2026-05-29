@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cardano Community Timeline</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0c0f1a;
+  --surface: #131726;
+  --surface2: #1a1f32;
+  --border: rgba(100,120,200,0.15);
+  --border-bright: rgba(100,160,255,0.35);
+  --text: #e8eaf6;
+  --text-muted: #7880a0;
+  --text-dim: #444d6e;
+  --accent-blue: #4a8fe8;
+  --accent-teal: #30d0a0;
+  --accent-purple: #9b7fe8;
+  --accent-amber: #f0a030;
+  --accent-coral: #e06060;
+  --accent-green: #50c878;
+  --font-display: 'Playfair Display', Georgia, serif;
+  --font-body: 'DM Sans', sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.65;
+  min-height: 100vh;
+}
+
+/* ── HERO ── */
+.hero {
+  padding: 60px 32px 48px;
+  max-width: 960px;
+  margin: 0 auto;
+  position: relative;
+}
+.hero::before {
+  content:'';
+  position:absolute;
+  top:0;left:50%;transform:translateX(-50%);
+  width:600px;height:300px;
+  background:radial-gradient(ellipse at center,rgba(74,143,232,0.12) 0%,transparent 70%);
+  pointer-events:none;
+}
+.hero-eyebrow {
+  font-size:11px;letter-spacing:0.2em;text-transform:uppercase;
+  color:var(--accent-teal);margin-bottom:16px;font-weight:500;
+}
+.hero-title {
+  font-family:var(--font-display);
+  font-size:clamp(32px,5vw,52px);
+  font-weight:700;
+  line-height:1.15;
+  color:#fff;
+  margin-bottom:12px;
+}
+.hero-title span { color:var(--accent-blue); }
+.hero-sub {
+  font-size:16px;color:var(--text-muted);max-width:560px;
+  margin-bottom:32px;font-weight:300;
+}
+.hero-stats {
+  display:flex;flex-wrap:wrap;gap:20px;
+}
+.stat-pill {
+  background:var(--surface);
+  border:0.5px solid var(--border-bright);
+  border-radius:40px;
+  padding:8px 20px;
+  font-size:13px;
+  display:flex;align-items:center;gap:8px;
+}
+.stat-pill strong { color:#fff;font-weight:500; }
+
+/* ── ACTIVITY CHART ── */
+.activity-section {
+  max-width:960px;margin:0 auto 32px;
+  padding:0 32px;
+}
+.activity-header {
+  display:flex;align-items:baseline;gap:12px;margin-bottom:14px;
+}
+.activity-title {
+  font-size:11px;letter-spacing:0.18em;text-transform:uppercase;
+  color:var(--text-muted);font-weight:500;
+}
+.activity-hint {
+  font-size:11px;color:var(--text-dim);
+}
+.activity-chart-wrap {
+  position:relative;
+  background:var(--surface);
+  border:0.5px solid var(--border);
+  border-radius:12px;
+  padding:20px 20px 32px;
+}
+.activity-bars {
+  display:flex;
+  align-items:flex-end;
+  gap:4px;
+  height:72px;
+  position:relative;
+}
+.activity-axis {
+  position:absolute;
+  bottom:0;left:0;right:0;
+  height:1px;
+  background:var(--border);
+}
+.ab-wrap {
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  flex:1;
+  height:100%;
+  justify-content:flex-end;
+  cursor:pointer;
+  position:relative;
+}
+.ab-bar {
+  width:100%;
+  min-height:2px;
+  border-radius:3px 3px 0 0;
+  transition:opacity 0.2s, filter 0.2s;
+  opacity:0.55;
+}
+.ab-wrap:hover .ab-bar { opacity:1; filter:brightness(1.25); }
+.ab-wrap.is-peak .ab-bar { opacity:0.9; }
+.ab-year {
+  position:absolute;
+  bottom:-22px;
+  font-size:9px;
+  color:var(--text-dim);
+  text-align:center;
+  white-space:nowrap;
+  pointer-events:none;
+}
+.ab-wrap.is-peak .ab-year { color:var(--text-muted); font-weight:500; }
+.ab-count-label {
+  position:absolute;
+  top:-18px;
+  font-size:9px;
+  color:var(--text-muted);
+  font-weight:500;
+  display:none;
+}
+.ab-wrap:hover .ab-count-label { display:block; }
+.ab-wrap.is-peak .ab-count-label { display:block; }
+.activity-legend {
+  display:flex;flex-wrap:wrap;gap:12px;
+  margin-top:12px;
+  padding-top:10px;
+  border-top:0.5px solid var(--border);
+}
+.al-item {
+  display:flex;align-items:center;gap:6px;
+  font-size:10px;color:var(--text-dim);
+}
+.al-dot {
+  width:8px;height:8px;border-radius:50%;flex-shrink:0;
+}
+
+/* ── FILTERS ── */
+.filter-bar {
+  max-width:960px;margin:0 auto 40px;
+  padding:0 32px;
+  display:flex;flex-wrap:wrap;gap:8px;
+}
+.filter-chip {
+  padding:7px 18px;
+  border-radius:30px;
+  border:0.5px solid var(--border);
+  background:transparent;
+  color:var(--text-muted);
+  font-family:var(--font-body);
+  font-size:12px;font-weight:500;
+  cursor:pointer;
+  transition:all 0.2s;
+  letter-spacing:0.02em;
+}
+.filter-chip:hover { border-color:var(--border-bright);color:var(--text); }
+.filter-chip.active {
+  background:rgba(74,143,232,0.18);
+  border-color:var(--accent-blue);
+  color:#fff;
+}
+
+/* ── SEARCH ── */
+.search-wrap {
+  max-width:960px;margin:0 auto 24px;padding:0 32px;
+}
+.search-input {
+  width:100%;
+  background:var(--surface);
+  border:0.5px solid var(--border);
+  border-radius:10px;
+  padding:11px 18px;
+  color:var(--text);
+  font-family:var(--font-body);
+  font-size:14px;
+  outline:none;
+  transition:border-color 0.2s;
+}
+.search-input::placeholder { color:var(--text-dim); }
+.search-input:focus { border-color:var(--border-bright); }
+
+/* ── ERA SECTION ── */
+.era-block {
+  max-width:960px;margin:0 auto 64px;padding:0 32px;
+}
+.era-header {
+  display:flex;align-items:center;gap:12px;
+  margin-bottom:10px;
+  padding-bottom:12px;
+  border-bottom:0.5px solid var(--border);
+}
+.era-dot {
+  width:10px;height:10px;border-radius:50%;flex-shrink:0;
+}
+.era-name {
+  font-family:var(--font-display);
+  font-size:20px;font-weight:600;color:#fff;
+}
+.era-years {
+  font-size:11px;color:var(--text-dim);
+  letter-spacing:0.1em;text-transform:uppercase;
+  margin-left:auto;
+}
+.era-desc {
+  font-size:13px;color:var(--text-muted);
+  margin-bottom:20px;
+  padding-left:22px;
+  border-left:2px solid var(--border);
+  font-style:italic;
+}
+.section-count {
+  font-size:11px;color:var(--text-dim);
+  margin-bottom:20px;
+  padding-left:4px;
+}
+
+/* ── ALTERNATING TIMELINE ── */
+.tl-list {
+  position:relative;
+  padding:8px 0 32px;
+}
+/* Center vertical line */
+.tl-list::before {
+  content:'';
+  position:absolute;
+  left:50%;top:0;bottom:0;
+  width:1px;
+  background:linear-gradient(to bottom,
+    transparent 0%,
+    var(--border-bright) 5%,
+    var(--border-bright) 95%,
+    transparent 100%);
+  transform:translateX(-50%);
+  z-index:0;
+}
+
+.tl-item {
+  display:grid;
+  grid-template-columns:1fr 48px 1fr;
+  margin-bottom:20px;
+  opacity:1;
+  transition:opacity 0.25s;
+  align-items:start;
+}
+.tl-item.dimmed { opacity:0.1; pointer-events:none; }
+
+/* Spine — center column */
+.tl-spine {
+  display:flex;
+  justify-content:center;
+  padding-top:20px;
+  position:relative;
+  z-index:1;
+}
+.tl-node {
+  width:13px;height:13px;border-radius:50%;
+  flex-shrink:0;
+  transition:transform 0.2s, box-shadow 0.2s;
+  cursor:pointer;
+}
+.tl-item:hover .tl-node {
+  transform:scale(1.5);
+}
+
+/* Card slot — left side */
+.tl-item.tl-left .tl-card-slot {
+  padding-right:20px;
+  position:relative;
+}
+/* Connector right→center */
+.tl-item.tl-left .tl-card-slot::after {
+  content:'';
+  position:absolute;
+  top:26px;
+  right:-2px;
+  width:22px;
+  height:1px;
+  background:var(--era-clr, var(--border));
+  opacity:0.4;
+  z-index:2;
+}
+
+/* Card slot — right side */
+.tl-item.tl-right .tl-card-slot {
+  padding-left:20px;
+  position:relative;
+}
+/* Connector left→center */
+.tl-item.tl-right .tl-card-slot::after {
+  content:'';
+  position:absolute;
+  top:26px;
+  left:-2px;
+  width:22px;
+  height:1px;
+  background:var(--era-clr, var(--border));
+  opacity:0.4;
+  z-index:2;
+}
+
+.tl-spacer { /* empty grid cell */ }
+
+/* ── THE CARD ── */
+.tl-card {
+  background:var(--surface);
+  border:0.5px solid var(--border);
+  border-radius:12px;
+  padding:14px 16px;
+  cursor:pointer;
+  transition:border-color 0.2s, background 0.2s, box-shadow 0.2s;
+  user-select:none;
+  position:relative;
+}
+.tl-card:hover {
+  border-color:var(--border-bright);
+  background:var(--surface2);
+  box-shadow:0 4px 24px rgba(0,0,0,0.35);
+}
+.tl-card.expanded {
+  border-color:var(--era-clr, var(--border-bright));
+  box-shadow:0 4px 28px rgba(0,0,0,0.4);
+}
+.tl-card.highlight { background:rgba(74,143,232,0.06); }
+.tl-card.midnight-card { background:linear-gradient(135deg,rgba(48,208,160,0.05) 0%,rgba(80,100,200,0.05) 100%); }
+.tl-card.expanded.highlight { border-color:rgba(74,143,232,0.55); }
+.tl-card.expanded.midnight-card { border-color:rgba(80,200,160,0.45); }
+
+.tl-card-top {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:8px;
+}
+.tl-card-top-left { flex:1;min-width:0; }
+
+.tl-meta {
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  margin-bottom:5px;
+}
+.tl-date {
+  font-size:10px;color:var(--text-dim);
+  font-weight:500;letter-spacing:0.06em;
+  text-transform:uppercase;
+}
+.tl-tag {
+  font-size:10px;font-weight:500;
+  padding:2px 8px;border-radius:10px;
+  letter-spacing:0.04em;text-transform:uppercase;
+}
+.tag-foundation { background:rgba(74,143,232,0.15);color:#7ab8ff; }
+.tag-research    { background:rgba(155,127,232,0.15);color:#c2a8ff; }
+.tag-upgrade     { background:rgba(48,208,160,0.15);color:#60ddb8; }
+.tag-project     { background:rgba(240,160,48,0.15);color:#f5c06a; }
+.tag-partnership { background:rgba(80,200,120,0.15);color:#7dd89a; }
+.tag-governance  { background:rgba(224,96,96,0.15);color:#f09090; }
+.tag-community   { background:rgba(200,180,80,0.15);color:#e0cc70; }
+.tag-identity    { background:rgba(80,180,220,0.15);color:#80d0ee; }
+.tag-defi        { background:rgba(160,100,220,0.15);color:#c090ee; }
+.tag-privacy     { background:rgba(100,200,160,0.15);color:#80d8b8; }
+
+.tl-title {
+  font-family:var(--font-display);
+  font-size:14px;font-weight:600;color:#fff;
+  line-height:1.35;
+}
+
+/* Chevron */
+.tl-chevron {
+  flex-shrink:0;
+  width:20px;height:20px;
+  display:flex;align-items:center;justify-content:center;
+  color:var(--text-dim);
+  font-size:13px;
+  transition:transform 0.28s cubic-bezier(0.4,0,0.2,1), color 0.2s;
+  margin-top:1px;
+}
+.tl-card.expanded .tl-chevron {
+  transform:rotate(180deg);
+  color:var(--text-muted);
+}
+
+/* Expand body */
+.tl-body-wrap {
+  max-height:0;
+  overflow:hidden;
+  transition:max-height 0.38s cubic-bezier(0.4,0,0.2,1), opacity 0.28s;
+  opacity:0;
+}
+.tl-card.expanded .tl-body-wrap {
+  max-height:700px;
+  opacity:1;
+}
+.tl-body {
+  font-size:13px;color:var(--text-muted);
+  line-height:1.7;font-weight:300;
+  margin-top:10px;
+  padding-top:10px;
+  border-top:0.5px solid var(--border);
+}
+.tl-body strong { color:var(--text);font-weight:500; }
+
+/* ── FOOTER ── */
+footer {
+  text-align:center;padding:40px 32px;
+  color:var(--text-dim);font-size:12px;
+  border-top:0.5px solid var(--border);
+  margin-top:20px;
+}
+footer a { color:var(--accent-blue);text-decoration:none; }
+
+/* ── MOBILE: single column ── */
+@media(max-width:680px){
+  .hero,.filter-bar,.era-block,.search-wrap,.activity-section{padding-left:16px;padding-right:16px;}
+  .hero-title{font-size:28px;}
+
+  .tl-list::before { left:20px; }
+  .tl-item {
+    grid-template-columns:40px 1fr;
+    grid-template-rows:auto;
+  }
+  .tl-item.tl-left .tl-card-slot,
+  .tl-item.tl-right .tl-card-slot {
+    grid-column:2;grid-row:1;
+    padding-left:12px;padding-right:0;
+  }
+  .tl-item.tl-left .tl-card-slot::after,
+  .tl-item.tl-right .tl-card-slot::after { display:none; }
+  .tl-spine { grid-column:1;grid-row:1; }
+  .tl-spacer { display:none; }
+}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="hero-eyebrow">Community Resource · Updated May 2026</div>
+  <h1 class="hero-title">The Cardano<br><span>Project History</span></h1>
+  <p class="hero-sub">A complete record of developments, research, partnerships, governance milestones, and ecosystem projects — built for the community, by the community.</p>
+  <div class="hero-stats">
+    <div class="stat-pill"><span>Founded</span><strong>2015</strong></div>
+    <div class="stat-pill"><span>Mainnet launch</span><strong>Sep 2017</strong></div>
+    <div class="stat-pill"><span>Project Catalyst funded</span><strong>2,000+ projects · $150M+</strong></div>
+    <div class="stat-pill"><span>Stake pools</span><strong>3,000+</strong></div>
+    <div class="stat-pill"><span>dApps in ecosystem</span><strong>500+</strong></div>
+    <div class="stat-pill"><span>Era</span><strong>Voltaire (Governance)</strong></div>
+  </div>
+</div>
+
+<!-- Activity chart -->
+<div class="activity-section">
+  <div class="activity-header">
+    <span class="activity-title">Project Activity</span>
+    <span class="activity-hint">Recorded events by year — hover for count, click to jump</span>
+  </div>
+  <div class="activity-chart-wrap">
+    <div class="activity-bars" id="activityBars">
+      <div class="activity-axis"></div>
+    </div>
+    <div class="activity-legend" id="activityLegend"></div>
+  </div>
+</div>
+
+<div class="search-wrap">
+  <input class="search-input" type="text" id="searchInput" placeholder="Search events, projects, people…" oninput="applyFilters()">
+</div>
+
+<div class="filter-bar" id="filterBar">
+  <button class="filter-chip active" onclick="setFilter('all',this)">All</button>
+  <button class="filter-chip" onclick="setFilter('foundation',this)">Foundation</button>
+  <button class="filter-chip" onclick="setFilter('research',this)">Research</button>
+  <button class="filter-chip" onclick="setFilter('upgrade',this)">Upgrades</button>
+  <button class="filter-chip" onclick="setFilter('project',this)">Projects</button>
+  <button class="filter-chip" onclick="setFilter('partnership',this)">Partnerships</button>
+  <button class="filter-chip" onclick="setFilter('governance',this)">Governance</button>
+  <button class="filter-chip" onclick="setFilter('identity',this)">Identity</button>
+  <button class="filter-chip" onclick="setFilter('defi',this)">DeFi &amp; NFT</button>
+  <button class="filter-chip" onclick="setFilter('community',this)">Community</button>
+  <button class="filter-chip" onclick="setFilter('privacy',this)">Midnight</button>
+</div>
+
+<div id="timeline-root"></div>
+
+<footer>
+  Built for the Cardano Community · Sources: IOHK Blog, Cardano Foundation, Messari, Project Catalyst, CoinDesk, Bitcoinist &amp; more ·
+  <a href="https://cardano.org" target="_blank">cardano.org</a>
+</footer>
+
+<script>
+const eras = [
+  {
+    name:"Pre-Cardano — Charles Hoskinson's Origins",
+    color:"#7880a0",
+    years:"1987 – 2014",
+    desc:"The intellectual and entrepreneurial journey that led to Cardano — from mathematics to Bitcoin, Ethereum co-founding, and a vision for a more rigorous blockchain.",
+    events:[
+      {date:"Nov 1987",type:"foundation",title:"Charles Hoskinson born in Colorado",body:"Born in Colorado, USA, Hoskinson studied cryptography and mathematics at Metropolitan State University of Denver and University of Colorado at Boulder. His passions: mathematics, functional programming, chess."},
+      {date:"2008",type:"foundation",title:"Ron Paul presidential campaign",body:"Before crypto, Hoskinson worked on Ron Paul's 2008 US presidential campaign, developing an early interest in decentralization, monetary reform, and alternative systems of governance."},
+      {date:"Jan 2013",type:"foundation",title:"Bitcoin Foundation Education Committee",body:"Hoskinson becomes the first chairman of the Bitcoin Foundation's education committee and founds the <strong>Cryptocurrency Research Group</strong> — one of the first academic efforts to study blockchain technology."},
+      {date:"Jul 2013",type:"foundation",title:"BitShares co-founded with Dan Larimer",body:"Hoskinson helps Dan Larimer vet and build BitShares, an early decentralized exchange (DEX). It grows into a billion-dollar network and gives Hoskinson hands-on experience with on-chain governance."},
+      {date:"Dec 2013",type:"foundation",title:"Ethereum co-founded",body:"Hoskinson joins Vitalik Buterin as one of Ethereum's eight original co-founders. He helps architect early Ethereum design and build the historic ICO. He briefly serves as CEO of the Ethereum project."},
+      {date:"2014",type:"foundation",title:"Departure from Ethereum — the fork in the road",body:"A philosophical disagreement with Vitalik Buterin leads to Hoskinson's exit. Buterin wanted Ethereum to remain a non-profit; Hoskinson pushed for a venture-backed, for-profit model. The split ultimately gives birth to a new vision for a more scientific, peer-reviewed blockchain."},
+    ]
+  },
+  {
+    name:"Byron Era — Foundation",
+    color:"#4a8fe8",
+    years:"2015 – 2019",
+    desc:"Development begins with a radically different philosophy: every protocol decision must be grounded in peer-reviewed academic research. Three organisations are formed; a mainnet launches. The blockchain world takes notice.",
+    events:[
+      {date:"2015",type:"foundation",title:"IOHK founded — Cardano development begins",body:"After a period of reflection, Hoskinson reconnects with Jeremy Wood (former Ethereum executive) and co-founds <strong>Input Output Hong Kong (IOHK)</strong>. Work on Cardano begins using a formal, research-first methodology — a first in blockchain development."},
+      {date:"2015",type:"research",title:"Ouroboros consensus protocol research begins",body:"IOHK begins developing <strong>Ouroboros</strong>, the world's first proof-of-stake consensus protocol designed entirely on academic foundations. The protocol would become one of the most cited papers in blockchain research."},
+      {date:"2015–2017",type:"foundation",title:"ICO raises ~$62 million across Japan",body:"Cardano conducts its ICO primarily in Japan over two years, raising approximately $62 million. Three independent organisations are established: <strong>IOHK</strong> (development), <strong>Cardano Foundation</strong> (oversight and community), and <strong>EMURGO</strong> (commercial adoption and enterprise partnerships)."},
+      {date:"2016",type:"research",title:"First Ouroboros paper published",body:"The original Ouroboros research paper is published and submitted for peer review — the first blockchain consensus protocol to be formally verified using cryptographic proofs. This academic rigour becomes Cardano's defining characteristic."},
+      {date:"2017",type:"partnership",title:"University research labs established",body:"IOHK funds dedicated blockchain research labs at the <strong>University of Edinburgh</strong> (Scotland) and the <strong>Tokyo Institute of Technology</strong> (Japan), formalising academia-industry collaboration as a core pillar of Cardano's development."},
+      {date:"Sep 23, 2017",type:"upgrade",highlight:true,title:"Cardano mainnet launches — Byron era begins",body:"The first block is minted on the Cardano blockchain. The network runs on the Ouroboros proof-of-stake protocol. <strong>ADA</strong> is named after <em>Ada Lovelace</em>, the 19th century mathematician considered the world's first computer programmer. The platform is named after Italian polymath <em>Gerolamo Cardano</em>."},
+      {date:"Sep 2017",type:"project",title:"Daedalus and Yoroi wallets launch",body:"<strong>Daedalus</strong>, a full-node desktop wallet, and <strong>Yoroi</strong>, a lightweight browser/mobile wallet, launch alongside the mainnet. A blockchain explorer is also released, giving users full transparency over the chain."},
+      {date:"2017",type:"research",title:"Ouroboros Praos published",body:"IOHK publishes <strong>Ouroboros Praos</strong>, an enhanced version of the consensus protocol offering improved security against adaptive adversaries. It becomes the protocol deployed on the live network."},
+      {date:"2018",type:"research",title:"Formal verification and Haskell implementation",body:"IOHK publishes multiple research papers on formal methods, smart contract verification, and the Haskell-based implementation of Cardano. The team grows to over 500 researchers and engineers worldwide."},
+      {date:"2018",type:"partnership",title:"EMURGO Japan ecosystem development",body:"<strong>EMURGO</strong> establishes operations in Japan and begins building enterprise partnerships and commercial products on Cardano, including an accelerator for blockchain startups."},
+      {date:"2019",type:"upgrade",title:"Shelley testnet launched for public testing",body:"IOHK launches the <strong>Shelley testnet</strong>, inviting the community to test decentralisation, staking mechanics, and stake pool operations for the first time. Thousands of community members participate in the incentivised testnet (ITN)."},
+      {date:"2019",type:"research",title:"Extended UTXO model research published",body:"IOHK publishes research on the <strong>Extended UTXO (EUTXO)</strong> model — a novel accounting model for smart contracts that is more predictable and formally verifiable than Ethereum's account-based model."},
+    ]
+  },
+  {
+    name:"Shelley Era — Decentralisation",
+    color:"#30d0a0",
+    years:"2020",
+    desc:"Cardano transitions from a foundation-controlled federated network to a community-run proof-of-stake system. Thousands of stake pools launch. The community takes its first real ownership of the network.",
+    events:[
+      {date:"Mar 2020",type:"upgrade",title:"Byron reboot — network hardening",body:"A major code reboot hardens the Byron mainnet infrastructure in preparation for the Shelley transition, improving node performance, networking, and the Daedalus wallet experience."},
+      {date:"Jun 2020",type:"upgrade",title:"Shelley hard fork — decentralisation begins",body:"The landmark <strong>Shelley hard fork</strong> launches, transitioning Cardano from a federated network (run entirely by IOHK) to a community proof-of-stake network. ADA holders can now delegate to stake pools and earn staking rewards."},
+      {date:"Jul 2020",type:"community",title:"1,000+ stake pools launch within weeks",body:"Within weeks of the Shelley upgrade, over 1,000 independent stake pools are created by community operators worldwide. This is one of the fastest decentralisations in blockchain history. The target: 500 blocks per epoch produced solely by community pools."},
+      {date:"2020",type:"research",title:"University of Wyoming blockchain research lab",body:"IOHK donates $500,000 in ADA to the <strong>University of Wyoming</strong> and establishes the Cardano Research Lab — advancing formal methods, cryptography, and blockchain security research."},
+      {date:"Oct 2020",type:"governance",title:"Project Catalyst Fund 1 — innovation treasury begins",body:"<strong>Project Catalyst</strong> launches its first funding round. The programme is one of the world's first decentralised community grant systems, allowing ADA holders to submit and vote on proposals for ecosystem development. Fund 1 allocates $250,000 in ADA."},
+      {date:"Nov 2020",type:"upgrade",title:"Allegra hard fork — token locking",body:"The Allegra hard fork introduces token locking capabilities, a prerequisite for the multi-asset ledger coming in Shelley's later phases. This is the first of a series of incremental hard forks delivered via Cardano's unique <strong>hard fork combinator</strong> technology."},
+    ]
+  },
+  {
+    name:"Goguen Era — Smart Contracts",
+    color:"#9b7fe8",
+    years:"2021 – 2022",
+    desc:"Cardano opens its doors to developers. Smart contracts, native tokens, NFTs, and real-world identity deployments arrive. The Africa partnerships become the largest blockchain real-world deployment in history.",
+    events:[
+      {date:"Mar 2021",type:"upgrade",title:"Mary hard fork — native multi-asset ledger",body:"The <strong>Mary hard fork</strong> enables native tokens and multi-asset transactions on Cardano without smart contracts. Hundreds of NFT projects, stablecoins, and utility tokens begin launching immediately on Cardano's EUTXO model."},
+      {date:"Apr 2021",type:"identity",highlight:true,title:"Ethiopia Ministry of Education — Atala PRISM deployment",body:"IOHK signs a landmark partnership with <strong>Ethiopia's Ministry of Education</strong> to deploy <strong>Atala PRISM</strong> — a blockchain-based digital identity system — across 3,500 schools covering <strong>5 million students</strong> and <strong>750,000 teachers</strong>. Academic credentials are issued as tamper-proof, blockchain-verified records. Described as the largest blockchain deployment in history at the time."},
+      {date:"Apr 2021",type:"partnership",title:"World Mobile — internet access for Africa",body:"IOG takes a <strong>10% stake in World Mobile Group</strong> and launches a partnership to bring internet connectivity and financial services to 250,000+ people in Tanzania. Atala PRISM provides digital identity so users can access banking, healthcare, and education services without traditional documents."},
+      {date:"May 2021",type:"community",title:"Project Catalyst Fund 4 — $1M milestone",body:"Project Catalyst reaches its first $1 million funding round. Hundreds of projects submit proposals spanning DeFi tooling, developer libraries, community education, and real-world utility applications."},
+      {date:"Jun 2021",type:"research",title:"Plutus smart contract platform released to developers",body:"<strong>Plutus</strong>, Cardano's native smart contract language (built on Haskell), and <strong>Marlowe</strong>, a domain-specific language for financial contracts, are released to developers ahead of mainnet deployment. Thousands of developers begin building."},
+      {date:"Aug 2021",type:"upgrade",title:"Alonzo hard fork — smart contracts go live",body:"The historic <strong>Alonzo hard fork</strong> launches on September 12, 2021, bringing full smart contract functionality to Cardano mainnet. Over 100 smart contracts are deployed in the first 24 hours. DeFi protocols, NFT marketplaces, and dApps begin launching across the ecosystem."},
+      {date:"Sep 2021",type:"community",highlight:true,title:"Cardano Summit 2021 — global ecosystem expansion",body:"The Cardano Summit 2021 attracts hundreds of thousands of viewers. Key announcements include: partnership with <strong>DISH Network</strong> (Fortune 250) to use Atala PRISM for telecom identity; partnership with <strong>Acuant</strong> for KYC/AML compliance; launch of Cardano's first DEXes; and the unveiling of the Basho and Voltaire roadmap."},
+      {date:"Nov 2021",type:"partnership",title:"Atala PRISM named one of the 14 most influential projects of 2021",body:"The <strong>Project Management Institute (PMI)</strong> names Atala PRISM one of the 14 most influential projects globally in 2021, recognising the Ethiopia deployment's scale and real-world impact."},
+      {date:"Dec 2021",type:"partnership",title:"Hoskinson donates $20M to Carnegie Mellon University",body:"Charles Hoskinson donates $20 million to <strong>Carnegie Mellon University</strong> to establish the <strong>Hoskinson Center for Formal Mathematics</strong> — advancing formal verification research that underpins Cardano's smart contract security."},
+      {date:"2021–2022",type:"project",title:"NFT ecosystem explodes on Cardano",body:"Cardano's native token standard (no smart contract required for NFTs) enables a massive NFT boom. Projects like <strong>SpaceBudz</strong>, <strong>Clay Nation</strong>, <strong>Deadpxlz</strong>, and hundreds of others launch. NFT volume on Cardano grows to compete with Ethereum-based platforms."},
+      {date:"2022 Q1",type:"project",title:"First Cardano DEXes and DeFi protocols launch",body:"The first wave of DeFi protocols arrives: <strong>SundaeSwap</strong> (AMM DEX), <strong>MinSwap</strong>, <strong>MuesliSwap</strong>, and <strong>Wingriders</strong> all launch. Despite early congestion, the ecosystem demonstrates strong developer and user demand for on-chain DeFi on Cardano."},
+      {date:"Sep 2022",type:"upgrade",highlight:true,title:"Vasil hard fork — major performance boost",body:"The <strong>Vasil hard fork</strong> (named after beloved community member Vasil St. Dabov) delivers the most significant performance upgrade since mainnet launch. Key improvements: Diffusion pipelining (faster block propagation), new Plutus V2 capabilities, reduced script sizes, lower transaction fees, and higher throughput. Smart contract efficiency improves by ~50%."},
+      {date:"2022",type:"identity",title:"Atala PRISM V2 — open identity standard",body:"IOHK releases <strong>Atala PRISM V2</strong>, transitioning to an open, W3C-standard decentralised identity (DID) solution. Integration with <strong>Acuant</strong> enables enterprise KYC/AML compliance built on Cardano's identity layer."},
+      {date:"Dec 2022",type:"research",title:"IOG rebrands — Input Output Global",body:"IOHK rebrands to <strong>Input Output Global (IOG)</strong>, reflecting the organisation's expanded global remit and its maturation beyond Hong Kong-based operations."},
+    ]
+  },
+  {
+    name:"Basho Era — Scaling",
+    color:"#f0a030",
+    years:"2022 – 2023",
+    desc:"Cardano focuses on throughput, scalability, and layer-2 solutions. The ecosystem matures: DeFi grows, developer tooling expands, and on-chain infrastructure becomes more robust.",
+    events:[
+      {date:"2022",type:"project",title:"Hydra layer-2 protocol — heads begin deploying",body:"<strong>Hydra</strong>, Cardano's native layer-2 scaling solution, advances from research to testnet. Hydra 'heads' enable off-chain state channels that settle back to mainnet, theoretically enabling thousands of transactions per second per head without compromising security."},
+      {date:"2022",type:"project",title:"Mithril — lightweight node bootstrapping",body:"<strong>Mithril</strong>, a stake-based multi-signature cryptographic scheme, is developed to allow lightweight clients and full nodes to sync the blockchain without downloading its entire history — dramatically lowering barriers to running Cardano nodes."},
+      {date:"2022",type:"community",title:"Project Catalyst Fund 8 — $16M round",body:"<strong>Project Catalyst Fund 8</strong> distributes $16 million in ADA across community-voted proposals spanning developer tooling, real-world utility, DeFi infrastructure, and social impact initiatives. Catalyst is now the world's largest decentralised innovation fund."},
+      {date:"Aug 2023",type:"upgrade",title:"Mithril goes live on mainnet",body:"<strong>Mithril</strong> launches on Cardano mainnet, producing its first certified snapshots. Full node sync time drops from hours to minutes for new users, significantly improving onboarding experience for developers and validators."},
+      {date:"Aug 2023",type:"governance",highlight:true,title:"SanchoNet — on-chain governance testnet launches",body:"<strong>SanchoNet</strong> launches as a dedicated governance testnet for CIP-1694 — the Cardano Improvement Proposal that defines on-chain voting mechanics. Community members can test Delegated Representative (DRep) registration, voting, and constitutional committee processes before mainnet deployment."},
+      {date:"2023",type:"project",title:"DeFi ecosystem matures — 500+ dApps in development",body:"By late 2023, Cardano's ecosystem grows to over 500 dApps in various stages of development. DEX volume across SundaeSwap, MinSwap, Wingriders, and MuesliSwap reaches hundreds of millions. Lending protocols, stablecoins, and yield aggregators proliferate."},
+      {date:"2023",type:"community",title:"Project Catalyst — $150M+ distributed, 2,000+ projects funded",body:"Project Catalyst cumulatively passes the milestone of <strong>$150 million distributed</strong> to over <strong>2,000 funded projects</strong> through community voting — making it one of the largest decentralised grant programmes in history."},
+      {date:"Q2 2023",type:"project",title:"Cardano blockchain transactions up 49%",body:"An IOHK report highlights a <strong>49% increase in on-chain transactions</strong> in Q2 2023, driven by DeFi activity and growing developer adoption. User and developer growth outpaces broader crypto market conditions."},
+      {date:"Dec 2023",type:"identity",title:"Atala PRISM integrates with Ethiopia national ID system",body:"IOG announces that <strong>Atala PRISM will integrate with Ethiopia's national digital ID infrastructure</strong>, connecting blockchain-verified credentials to the country's government-issued national identity standard and scaling the deployment to the full population."},
+      {date:"2023",type:"partnership",title:"ADApay partners with African Union Development Bank",body:"<strong>ADApay</strong>, a Cardano-based payment gateway, partners with the African Union Development Bank (AfDB) to expand financial inclusion across Africa — enabling ADA-based payments and transactions for unbanked populations."},
+    ]
+  },
+  {
+    name:"Voltaire Era — Governance",
+    color:"#e06060",
+    years:"2024 – Present",
+    desc:"The final phase of Cardano's original roadmap. Governance fully transfers from IOHK to the community. Midnight emerges as the next chapter — a privacy-preserving sidechain with global ambitions.",
+    events:[
+      {date:"Jan 2024",type:"project",title:"Cardano Ecosystem Guide 2025 published",body:"The <strong>Cardano Foundation</strong> publishes the comprehensive Cardano Ecosystem Guide 2025 for enterprises, showcasing key verticals: traceability, authenticity verification, digital identity, and sustainability — demonstrating Cardano beyond DeFi."},
+      {date:"2024",type:"project",title:"Levvy Finance, MinSwap V2, and DeFi maturation",body:"Cardano's DeFi ecosystem matures significantly: <strong>Levvy Finance</strong> (lending protocol), <strong>MinSwap V2</strong> (upgraded AMM), <strong>Danogo</strong> (leveraged DeFi), <strong>Nuvola</strong> (first DePIN aggregator on Cardano), and <strong>Surf</strong> (open-source lending) all launch or upgrade, establishing a comprehensive DeFi stack."},
+      {date:"Jun 2024",type:"project",title:"EMURGO advances enterprise adoption",body:"EMURGO deepens enterprise partnerships across Asia and Africa, including blockchain supply chain tracking for agricultural products, anti-counterfeiting solutions using Atala Scan, and business accelerator programmes for Cardano startups."},
+      {date:"Sep 1, 2024",type:"governance",highlight:true,title:"Chang hard fork — Voltaire era begins",body:"The historic <strong>Chang hard fork</strong> launches on September 1, 2024, initiating the Voltaire era. Governance formally transfers from IOG to the Cardano community. Three governing bodies are established: the <strong>Constitutional Committee</strong> (protocol compliance), <strong>DReps</strong> (Delegated Representatives who vote on behalf of ADA holders), and <strong>Stake Pool Operators</strong>. Any ADA holder can now vote on protocol upgrades and treasury spending via <strong>CIP-1694</strong>."},
+      {date:"Oct 2024",type:"governance",title:"DRep registration opens — community voting goes live",body:"The second phase of Chang activates full DRep registration and on-chain voting. Thousands of ADA holders register as Delegated Representatives. Community governance of Cardano's multi-billion ADA treasury becomes a reality."},
+      {date:"Nov 2024",type:"community",title:"Cardano Foundation expands DeFi roadmap",body:"The Cardano Foundation announces an expanded DeFi strategy, committing an eight-figure ADA amount in liquidity to key Cardano stablecoin projects, and pledging ongoing tooling improvements, exchange support, and intermediary integrations to grow DeFi accessibility."},
+      {date:"2024",type:"privacy",title:"Midnight testnet launches",body:"<strong>Midnight</strong>, the privacy-focused Cardano sidechain developed by IOG, launches its public testnet. Midnight uses <strong>zero-knowledge proofs</strong> (ZK proofs) to create a programmable privacy layer — separating public transaction data from confidential smart contract logic. Developers begin building privacy-preserving dApps on the testnet."},
+      {date:"Jan 2025",type:"governance",highlight:true,title:"Plomin hard fork — full community governance complete",body:"The <strong>Plomin hard fork</strong> finalises Cardano's transition to fully decentralised governance. The community treasury — holding one of the largest on-chain reserves in all of crypto — comes under complete community control. IOG formally steps back from protocol decision-making. Cardano becomes the first major blockchain to complete this level of governance decentralisation."},
+      {date:"Mar 2025",type:"milestone",title:"ADA proposed for US strategic crypto reserve",body:"US President Trump announces plans to include ADA alongside Bitcoin, Ethereum, Solana, and XRP in a proposed <strong>US strategic cryptocurrency reserve</strong> — a landmark moment of institutional legitimacy for the Cardano ecosystem."},
+      {date:"Jul 2025",type:"partnership",title:"EMURGO + Ctrl Wallet — 2,300+ blockchain interoperability",body:"<strong>EMURGO</strong> partners with <strong>Ctrl Wallet</strong>, enabling Cardano interoperability with over <strong>2,300 blockchains</strong>. This dramatically expands Cardano's cross-chain reach and positions ADA as a connective asset across the multi-chain landscape."},
+      {date:"Aug 2025",type:"governance",highlight:true,title:"Community approves $71M treasury fund for core infrastructure",body:"In one of the most significant decentralised governance decisions in blockchain history, the Cardano community votes to approve a <strong>$71 million ADA treasury allocation</strong> for core infrastructure upgrades — demonstrating that community governance can mobilise major resources effectively."},
+      {date:"Q3 2025",type:"project",title:"Cardano DeFi TVL grows 28.7% to 3-year peak",body:"According to Messari's Q3 2025 Cardano report, <strong>DeFi Total Value Locked (TVL) surges 28.7%</strong> to $423.5 million — the highest since 2022. Market cap grows 42.5% to $29.5B. NFT activity, governance participation, and developer metrics all show strong growth."},
+      {date:"Dec 2025",type:"privacy",highlight:true,title:"Midnight 'Hilo' phase launches — NIGHT token goes live",body:"<strong>Midnight's NIGHT token officially launches</strong> (Phase 1: 'Hilo'), doubles in value within days, and approaches a $1 billion valuation as major exchanges open markets. The <strong>dual-token model</strong> is confirmed: <strong>NIGHT</strong> tokens govern the network, while <strong>DUST</strong> tokens power shielded private transactions. ADA holders receive a portion of NIGHT via the <strong>Glacier Drop</strong>. Midnight is described as the most ambitious privacy blockchain launch since Zcash in 2016."},
+      {date:"Dec 2025",type:"privacy",title:"Midnight's zero-knowledge architecture — how it works",body:"Midnight uses <strong>ZK proofs</strong> to separate public and private data in smart contracts. Unlike traditional blockchains where all data is public, Midnight lets developers choose what to reveal. As a <strong>sidechain</strong> (not a layer-2), it can integrate with Ethereum, Solana, Bitcoin, and XRP on equal terms — positioning it as a universal privacy layer for the entire crypto ecosystem."},
+      {date:"2026 Q3 (planned)",type:"privacy",title:"Midnight 'Hua' phase — LayerZero cross-chain integration",body:"The upcoming <strong>'Hua' phase</strong> of Midnight's four-phase roadmap targets <strong>LayerZero integration</strong> — enabling Midnight to provide privacy-as-a-service to any blockchain that connects via LayerZero's cross-chain messaging protocol. This would make Midnight's privacy layer accessible to virtually any chain in the ecosystem."},
+      {date:"2026",type:"upgrade",title:"Cardano Node 11.0 hard fork on the horizon",body:"The next major technical milestone for Cardano is the <strong>Node 11.0 hard fork</strong>, targeting improved smart contract capabilities, enhanced performance, and expanded interoperability. Community governance will vote on the upgrade timeline and parameters."},
+      {date:"2026 (ongoing)",type:"research",title:"Ouroboros Leios — next-generation consensus research",body:"IOG is developing <strong>Ouroboros Leios</strong>, the next evolution of Cardano's consensus protocol. Leios aims to dramatically increase throughput by allowing blocks to be produced in parallel pipelines rather than sequential chains — potentially enabling Cardano to scale to hundreds of thousands of transactions per second while maintaining decentralisation."},
+    ]
+  }
+];
+
+/* ── helpers ── */
+let activeFilter = "all";
+
+function setFilter(type, btn) {
+  activeFilter = type;
+  document.querySelectorAll(".filter-chip").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  applyFilters();
+}
+
+function applyFilters() {
+  const q = document.getElementById("searchInput").value.toLowerCase();
+  document.querySelectorAll(".tl-item").forEach(item => {
+    const matchesFilter = activeFilter === "all" || item.dataset.type === activeFilter;
+    const matchesSearch = !q || item.dataset.text.includes(q);
+    item.classList.toggle("dimmed", !(matchesFilter && matchesSearch));
+  });
+  document.querySelectorAll(".era-block").forEach(block => {
+    const visible = [...block.querySelectorAll(".tl-item")].some(i => !i.classList.contains("dimmed"));
+    block.style.opacity = visible ? "1" : "0.15";
+  });
+}
+
+function tagClass(type) {
+  const map = {
+    foundation:"tag-foundation", research:"tag-research", upgrade:"tag-upgrade",
+    project:"tag-project", partnership:"tag-partnership", governance:"tag-governance",
+    community:"tag-community", identity:"tag-identity", defi:"tag-defi",
+    privacy:"tag-privacy", milestone:"tag-upgrade"
+  };
+  return map[type] || "tag-project";
+}
+function tagLabel(type) {
+  const map = {
+    foundation:"Foundation", research:"Research", upgrade:"Upgrade",
+    project:"Project", partnership:"Partnership", governance:"Governance",
+    community:"Community", identity:"Identity", defi:"DeFi / NFT",
+    privacy:"Midnight", milestone:"Milestone"
+  };
+  return map[type] || type;
+}
+
+function extractYear(dateStr) {
+  const m = dateStr.match(/\b(19|20)\d{2}\b/);
+  return m ? parseInt(m[0]) : null;
+}
+
+/* ── Activity chart ── */
+(function buildActivityChart() {
+  const yearCounts = {};
+  const yearEraColor = {};
+
+  eras.forEach(era => {
+    era.events.forEach(ev => {
+      const y = extractYear(ev.date);
+      if (!y) return;
+      yearCounts[y] = (yearCounts[y] || 0) + 1;
+      if (!yearEraColor[y]) yearEraColor[y] = era.color;
+    });
+  });
+
+  const years = Object.keys(yearCounts).map(Number).sort((a, b) => a - b);
+  if (!years.length) return;
+
+  const minY = years[0], maxY = years[years.length - 1];
+  const maxCount = Math.max(...Object.values(yearCounts));
+  const peakYear = years.find(y => yearCounts[y] === maxCount);
+
+  const allYears = [];
+  for (let y = minY; y <= maxY; y++) allYears.push(y);
+
+  const container = document.getElementById("activityBars");
+  // Remove axis placeholder temporarily
+  const axis = container.querySelector(".activity-axis");
+  container.removeChild(axis);
+
+  allYears.forEach(year => {
+    const count = yearCounts[year] || 0;
+    const heightPct = count === 0 ? 3 : Math.max(6, Math.round((count / maxCount) * 100));
+    const isPeak = year === peakYear;
+    const color = yearEraColor[year] || "#4a8fe8";
+
+    // Show label for years with events, but only every 2 years + peak + first + last
+    const hasEvents = count > 0;
+    const showLabel = hasEvents && (
+      isPeak || year === minY || year === maxY ||
+      (year % 2 === 0 && count > 0)
+    );
+
+    const wrap = document.createElement("div");
+    wrap.className = "ab-wrap" + (isPeak ? " is-peak" : "") + (count === 0 ? " no-events" : "");
+    wrap.title = count > 0 ? `${year}: ${count} event${count !== 1 ? "s" : ""}` : year;
+    wrap.style.opacity = count === 0 ? "0.3" : "1";
+
+    // Find the era block id to scroll to
+    const eraForYear = eras.find(e => {
+      const m1 = e.years.match(/\b(19|20)\d{2}\b/g);
+      if (!m1) return false;
+      const y1 = parseInt(m1[0]);
+      const y2 = m1[1] ? parseInt(m1[1]) : y1;
+      return year >= y1 && year <= y2;
+    });
+
+    if (eraForYear && count > 0) {
+      wrap.style.cursor = "pointer";
+      wrap.onclick = () => {
+        const eraEls = document.querySelectorAll(".era-block");
+        eraEls.forEach(el => {
+          if (el.querySelector(".era-name") && el.querySelector(".era-name").textContent === eraForYear.name) {
+            el.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        });
+      };
+    }
+
+    wrap.innerHTML =
+      `<div class="ab-count-label">${count || ""}</div>` +
+      `<div class="ab-bar" style="height:${heightPct}%;background:${count ? color : "var(--border)"};"></div>` +
+      (showLabel ? `<div class="ab-year">${year}</div>` : "");
+
+    container.appendChild(wrap);
+  });
+
+  container.appendChild(axis);
+
+  // Legend
+  const legend = document.getElementById("activityLegend");
+  eras.forEach(era => {
+    const item = document.createElement("div");
+    item.className = "al-item";
+    item.innerHTML = `<div class="al-dot" style="background:${era.color}"></div><span>${era.name.split("—")[0].trim()} (${era.years})</span>`;
+    legend.appendChild(item);
+  });
+})();
+
+/* ── Render alternating timeline ── */
+const root = document.getElementById("timeline-root");
+
+eras.forEach(era => {
+  const block = document.createElement("div");
+  block.className = "era-block";
+
+  block.innerHTML = `
+    <div class="era-header">
+      <div class="era-dot" style="background:${era.color}"></div>
+      <div class="era-name">${era.name}</div>
+      <div class="era-years">${era.years}</div>
+    </div>
+    <div class="era-desc">${era.desc}</div>
+    <div class="section-count">${era.events.length} events · click any event to expand</div>
+    <div class="tl-list" id="list-${era.name.replace(/\W/g,'_')}"></div>
+  `;
+  root.appendChild(block);
+
+  const list = block.querySelector(".tl-list");
+
+  era.events.forEach((ev, idx) => {
+    const side = idx % 2 === 0 ? "tl-left" : "tl-right";
+    const isMidnight = ev.type === "privacy";
+
+    const item = document.createElement("div");
+    item.className = `tl-item ${side}`;
+    item.dataset.type = ev.type;
+    item.dataset.text = (ev.title + " " + ev.body + " " + ev.date).toLowerCase();
+    item.style.setProperty("--era-clr", era.color);
+
+    const cardHTML = `
+      <div class="tl-card ${ev.highlight ? "highlight" : ""} ${isMidnight ? "midnight-card" : ""}" onclick="this.classList.toggle('expanded')">
+        <div class="tl-card-top">
+          <div class="tl-card-top-left">
+            <div class="tl-meta">
+              <span class="tl-date">${ev.date}</span>
+              <span class="tl-tag ${tagClass(ev.type)}">${tagLabel(ev.type)}</span>
+            </div>
+            <div class="tl-title">${ev.title}</div>
+          </div>
+          <div class="tl-chevron">&#8964;</div>
+        </div>
+        <div class="tl-body-wrap">
+          <div class="tl-body">${ev.body}</div>
+        </div>
+      </div>
+    `;
+    const spineHTML = `
+      <div class="tl-spine">
+        <div class="tl-node" style="background:${era.color};box-shadow:0 0 0 3px rgba(12,15,26,0.85),0 0 8px ${era.color}55"></div>
+      </div>
+    `;
+    const spacerHTML = `<div class="tl-spacer"></div>`;
+
+    if (side === "tl-left") {
+      item.innerHTML = `<div class="tl-card-slot">${cardHTML}</div>${spineHTML}${spacerHTML}`;
+    } else {
+      item.innerHTML = `${spacerHTML}${spineHTML}<div class="tl-card-slot">${cardHTML}</div>`;
+    }
+
+    list.appendChild(item);
+  });
+});
+</script>
+</body>
+</html>
